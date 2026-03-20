@@ -1,5 +1,5 @@
 # ─── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 # gcc needed for go-sqlite3 (CGO)
 RUN apk add --no-cache gcc musl-dev git
@@ -18,7 +18,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build \
     ./cmd/agentclawd
 
 # ─── Stage 2: Runtime ────────────────────────────────────────────────────────
-FROM alpine:3.19
+FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates tzdata
 
@@ -26,8 +26,17 @@ WORKDIR /app
 
 COPY --from=builder /bin/agentclawd .
 
+# Static dashboard frontend
+COPY static/ /app/static/
+
+# Pricing config — can be overridden via volume mount
+COPY pricing/agent-pricing.json /app/pricing/agent-pricing.json
+
+# Agent config — can be overridden via volume mount
+COPY config/agents.json /app/config/agents.json
+
 # Default dirs — overridden by volume mounts in compose
-RUN mkdir -p /app/data /app/memory/agents /app/state/scope /app/state/old /app/state/resolved /app/static
+RUN mkdir -p /app/data /app/memory/agents /app/state/scope /app/state/old /app/state/resolved
 
 EXPOSE 8080
 

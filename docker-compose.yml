@@ -12,20 +12,23 @@ services:
     env_file:
       - .env                # API keys — copy from .env.example
     environment:
-      ADDR:         ":8080"
-      DB_PATH:      "/app/data/agentclaw.db"
-      PROJECT_PATH: "/app/memory/project.md"
-      STATE_PATH:   "/app/state"
-      MEMORY_PATH:  "/app/memory"
-      TZ:           "Asia/Ho_Chi_Minh"
+      ADDR:          ":8080"
+      DB_PATH:       "/app/data/agentclaw.db"
+      PROJECT_PATH:  "/app/memory/project.md"
+      SCOPE_PATH:    "/app/state"
+      PRICING_PATH:  "/app/pricing/agent-pricing.json"
+      AGENTS_CONFIG: "/app/config/agents.json"
+      TZ:            "Asia/Ho_Chi_Minh"
     volumes:
       # Persistent data — survives container restart
-      - ./data:/app/data          # SQLite database
-      - ./memory:/app/memory      # project.md + agent docs
-      - ./state:/app/state        # agent state files
-      - ./static:/app/static      # dashboard HTML
+      - ./data:/app/data              # SQLite database
+      - ./memory:/app/memory          # project.md + agent docs
+      - ./state:/app/state            # scope manifests, resolved patterns
+      - ./static:/app/static          # dashboard HTML
+      - ./pricing:/app/pricing        # model pricing JSON
+      - ./config:/app/config          # agent configuration
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/metrics/today"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -52,6 +55,3 @@ services:
 networks:
   agentclaw-net:
     driver: bridge
-
-volumes:
-  agentclaw-data:

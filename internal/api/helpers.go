@@ -31,27 +31,35 @@ func errJSON(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// corsAllowMethods and corsAllowHeaders are pre-computed constants
+// to avoid repeated string construction on every request.
+const (
+	corsAllowMethods = "GET,POST,PATCH,PUT,DELETE,OPTIONS"
+	corsAllowHeaders = "Content-Type"
+)
+
 func cors(next http.HandlerFunc) http.HandlerFunc {
+	// Capture once at middleware creation time — not on every request.
 	allowedOrigin := os.Getenv("CORS_ORIGIN")
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := allowedOrigin
-		switch {
-		case r.Method == http.MethodGet || r.Method == http.MethodOptions:
-			// GET and preflight: allow wildcard if no specific origin configured.
-			if origin == "" {
-				origin = "*"
-			}
-		default:
-			// Mutation methods (POST, PATCH, PUT, DELETE): require a specific origin.
-			if origin == "" {
-				errJSON(w, http.StatusForbidden, "CORS: mutation requests require a specific CORS_ORIGIN")
+		if origin == "" {
+			// No CORS_ORIGIN configured — restrict to same-origin only.
+			// Never use wildcard "*" as it allows any website to exfiltrate API data.
+			reqOrigin := r.Header.Get("Origin")
+			if reqOrigin == "" || reqOrigin == "http://"+r.Host || reqOrigin == "https://"+r.Host {
+				origin = reqOrigin
+			} else {
+				errJSON(w, http.StatusForbidden, "CORS: origin not allowed, set CORS_ORIGIN env var")
 				return
 			}
 		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
+		w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

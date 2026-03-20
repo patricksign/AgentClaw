@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/patricksign/agentclaw/internal/agent"
 )
@@ -10,18 +9,15 @@ import (
 func (s *Server) HandlerAgent(mux *http.ServeMux) {
 	// Agents
 	mux.HandleFunc("GET /api/agents", cors(s.handleAgents))
-	mux.HandleFunc("POST /api/agents/:id/restart", cors(s.handleRestartAgent))
-	mux.HandleFunc("POST /api/agents/:id/kill", cors(s.handleKillAgent))
+	mux.HandleFunc("POST /api/agents/{id}/restart", cors(s.handleRestartAgent))
+	mux.HandleFunc("POST /api/agents/{id}/kill", cors(s.handleKillAgent))
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
 // GET /api/agents — list all agents + status
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		errJSON(w, 405, "method not allowed")
-		return
-	}
+	// Method already enforced by mux pattern "GET /api/agents".
 	statuses := s.pool.StatusAll()
 	type agentInfo struct {
 		ID     string       `json:"id"`
@@ -34,53 +30,30 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// POST /api/agents/:id/restart  — restart agent
+// POST /api/agents/{id}/restart — restart agent
 func (s *Server) handleRestartAgent(w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/agents/"), "/")
-	id := parts[0]
-	action := ""
-	if len(parts) > 1 {
-		action = parts[1]
+	id := r.PathValue("id")
+	if id == "" {
+		errJSON(w, http.StatusBadRequest, "missing agent id")
+		return
 	}
-
-	switch {
-	case action == "restart" && r.Method == http.MethodPost:
-		if err := s.pool.Restart(id); err != nil {
-			errJSON(w, 400, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]string{"status": "restarted"})
-
-	case action == "kill" && r.Method == http.MethodPost:
-		if err := s.pool.Kill(id); err != nil {
-			errJSON(w, 400, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]string{"status": "killed"})
-
-	default:
-		errJSON(w, 405, "method not allowed")
+	if err := s.pool.Restart(id); err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "restarted"})
 }
 
-// POST /api/agents/:id/kill     — kill agent
+// POST /api/agents/{id}/kill — kill agent
 func (s *Server) handleKillAgent(w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/agents/"), "/")
-	id := parts[0]
-	action := ""
-	if len(parts) > 1 {
-		action = parts[1]
+	id := r.PathValue("id")
+	if id == "" {
+		errJSON(w, http.StatusBadRequest, "missing agent id")
+		return
 	}
-
-	switch {
-	case action == "kill" && r.Method == http.MethodPost:
-		if err := s.pool.Kill(id); err != nil {
-			errJSON(w, 400, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]string{"status": "killed"})
-
-	default:
-		errJSON(w, 405, "method not allowed")
+	if err := s.pool.Kill(id); err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "killed"})
 }

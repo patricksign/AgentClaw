@@ -15,6 +15,7 @@ import (
 type MemoryStore interface {
 	BuildContext(agentID, role, taskTitle, complexity string) MemoryContext
 	SaveTask(t *Task) error
+	GetTask(id string) (*Task, error)
 	UpdateTaskStatus(id string, status TaskStatus) error
 	AddTokens(taskID string, in, out int64, cost float64) error
 	LogTokenUsage(taskID, agentID, model string, in, out int64, cost float64, durationMs int64) error
@@ -25,17 +26,129 @@ type MemoryStore interface {
 	AppendAgentDoc(role, section string) error
 	// AddScratchpadEntry appends an entry to the shared team scratchpad.
 	AddScratchpadEntry(entry state.ScratchpadEntry) error
+	// ListTasksByPhase returns all tasks in a given phase with the given status.
+	ListTasksByPhase(phase ExecutionPhase, status TaskStatus) ([]*Task, error)
 }
+
+// PostRunHook is called after a task completes successfully. It receives the
+// executing agent, the task, and the result. Errors are logged but do not
+// fail the task — hooks are best-effort side effects (e.g. Trello card
+// creation, Slack notifications).
+type PostRunHook func(ctx context.Context, a Agent, task *Task, result *TaskResult)
 
 // Executor wires Pool + Queue + Memory + EventBus together for task execution.
 type Executor struct {
-	pool *Pool
-	bus  *EventBus
-	mem  MemoryStore
+	pool       *Pool
+	bus        *EventBus
+	mem        MemoryStore
+	hooks      []PostRunHook
+	replyStore *ReplyStore       // optional — enables task resume after human answer
+	queue      taskQueuer        // optional — enables RecoverSuspendedTasks re-dispatch
+	skillStore *state.SkillStore // optional — enables agent self-improvement via skills
+}
+
+// taskQueuer is the minimal queue interface needed by RecoverSuspendedTasks.
+type taskQueuer interface {
+	Push(task *Task)
 }
 
 func NewExecutor(pool *Pool, bus *EventBus, mem MemoryStore) *Executor {
 	return &Executor{pool: pool, bus: bus, mem: mem}
+}
+
+// SetReplyStore injects the ReplyStore so ResumeTask can route answers.
+func (e *Executor) SetReplyStore(rs *ReplyStore) {
+	e.replyStore = rs
+}
+
+// SetQueue injects the task queue so RecoverSuspendedTasks can re-dispatch tasks.
+func (e *Executor) SetQueue(q taskQueuer) {
+	e.queue = q
+}
+
+// SetSkillStore injects the SkillStore for agent self-improvement.
+func (e *Executor) SetSkillStore(ss *state.SkillStore) {
+	e.skillStore = ss
+}
+
+// AddPostRunHook registers a hook that runs after every successful task.
+func (e *Executor) AddPostRunHook(h PostRunHook) {
+	e.hooks = append(e.hooks, h)
+}
+
+// ResumeTask re-dispatches a task that is suspended in PhaseClarify.
+// It is called by the /api/tasks/{id}/answer handler after an answer is recorded.
+func (e *Executor) ResumeTask(ctx context.Context, taskID string) error {
+	task, err := e.mem.GetTask(taskID)
+	if err != nil {
+		return fmt.Errorf("ResumeTask: load task %s: %w", taskID, err)
+	}
+	task.Lock()
+	phase := task.Phase
+	task.Unlock()
+
+	if phase != PhaseClarify {
+		return fmt.Errorf("ResumeTask: task %s is in phase %s, not clarify", taskID, phase)
+	}
+	if e.queue == nil {
+		return fmt.Errorf("ResumeTask: queue not configured")
+	}
+	e.queue.Push(task)
+	log.Info().Str("task", taskID).Msg("ResumeTask: task re-queued after answer")
+	return nil
+}
+
+// RecoverSuspendedTasks finds all tasks stuck in PhaseClarify (e.g. after a server restart)
+// and re-dispatches them to the queue so they can resume waiting for human answers.
+// Call this once at startup after all components are initialised, before starting workers.
+func (e *Executor) RecoverSuspendedTasks(ctx context.Context, tg suspendedNotifier) error {
+	if e.queue == nil {
+		return nil
+	}
+	tasks, err := e.mem.ListTasksByPhase(PhaseClarify, TaskRunning)
+	if err != nil {
+		return fmt.Errorf("RecoverSuspendedTasks: query: %w", err)
+	}
+
+	for _, task := range tasks {
+		task.Lock()
+		taskID := task.ID
+		taskTitle := task.Title
+		phaseStartedAt := task.PhaseStartedAt
+		// Deep copy the questions slice (C4) — the backing array must not be
+		// shared with phaseClarify which may iterate it concurrently after re-queue.
+		questions := make([]Question, len(task.Questions))
+		copy(questions, task.Questions)
+		task.Unlock()
+
+		// Re-send AskHuman for each unresolved question (server may have restarted
+		// before the Telegram message was sent or the channel was registered).
+		if tg != nil && e.replyStore != nil {
+			for _, q := range questions {
+				if q.Resolved {
+					continue
+				}
+				if !e.replyStore.HasPending(taskID) {
+					msgID, askErr := tg.NotifyResumeAfterRestart(ctx, taskID, taskTitle, q.Text, phaseStartedAt.Format(time.RFC3339))
+					if askErr != nil {
+						log.Warn().Err(askErr).Str("task", taskID).Msg("RecoverSuspendedTasks: re-notify failed")
+						continue
+					}
+					// Re-register so the reply can be routed.
+					_ = e.replyStore.Register(msgID, taskID, q.ID)
+				}
+			}
+		}
+
+		e.queue.Push(task)
+		log.Info().Str("task", taskID).Msg("RecoverSuspendedTasks: re-queued suspended task")
+	}
+	return nil
+}
+
+// suspendedNotifier is satisfied by telegram.DualChannelClient — used in RecoverSuspendedTasks.
+type suspendedNotifier interface {
+	NotifyResumeAfterRestart(ctx context.Context, taskID, taskTitle, questionText, phaseStartedAt string) (int, error)
 }
 
 // Execute runs a task on the first available agent for the required role.
@@ -71,11 +184,11 @@ func (e *Executor) Execute(ctx context.Context, task *Task) error {
 	task.AssignedTo = agentID
 	task.Unlock()
 
+	// SaveTask does INSERT OR REPLACE which includes the status=running set above.
+	// No need for a separate UpdateTaskStatus call — avoids double DB write.
 	if err := e.mem.SaveTask(task); err != nil {
 		log.Error().Err(err).Str("task", taskID).Msg("SaveTask failed")
-	}
-	if err := e.mem.UpdateTaskStatus(taskID, TaskRunning); err != nil {
-		log.Error().Err(err).Str("task", taskID).Msg("UpdateTaskStatus(running) failed")
+		return fmt.Errorf("execute: save task %s: %w", taskID, err)
 	}
 
 	e.bus.Publish(Event{
@@ -95,6 +208,24 @@ func (e *Executor) Execute(ctx context.Context, task *Task) error {
 
 	// Build tiered memory context using snapshotted fields.
 	memCtx := e.mem.BuildContext(agentID, taskRole, taskTitle, taskComplexity)
+
+	// Inject learned skills into context for self-improvement.
+	// Uses multi-part buffer: index (summaries) is always loaded,
+	// detail bodies are loaded on-demand for the most relevant skills.
+	if e.skillStore != nil {
+		task.Lock()
+		taskTags := make([]string, len(task.Tags))
+		copy(taskTags, task.Tags)
+		task.Unlock()
+
+		memCtx.SkillContext = e.skillStore.BuildSkillContextForTask(state.SkillQuery{
+			Role:       taskRole,
+			TaskTitle:  taskTitle,
+			TaskTags:   taskTags,
+			Complexity: taskComplexity,
+		})
+		memCtx.SkillStore = e.skillStore
+	}
 
 	// Run with per-agent timeout.
 	timeout := time.Duration(a.Config().TimeoutSecs) * time.Second
@@ -152,6 +283,24 @@ func (e *Executor) Execute(ctx context.Context, task *Task) error {
 			TaskID:  taskID,
 			Payload: err.Error(),
 		})
+
+		// Record failure reflection for skill improvement.
+		if e.skillStore != nil {
+			failReflection := state.PostTaskReflection{
+				TaskID:    taskID,
+				AgentID:   agentID,
+				Role:      taskRole,
+				Success:   false,
+				AntiPatterns: []string{
+					fmt.Sprintf("Task '%s' failed: %s", taskTitle, truncateForReflection(err.Error(), 200)),
+				},
+				Timestamp: time.Now(),
+			}
+			if applyErr := e.skillStore.ApplyReflection(failReflection); applyErr != nil {
+				log.Warn().Err(applyErr).Str("task", taskID).Msg("ApplyReflection(failure) failed")
+			}
+		}
+
 		log.Error().Err(err).Str("task", taskID).Msg("task failed")
 		return err
 	}
@@ -228,23 +377,39 @@ func (e *Executor) Execute(ctx context.Context, task *Task) error {
 		}
 	}
 
+	// Run post-completion hooks (Trello card creation, notifications, etc.).
+	// Errors are logged but never fail the task.
+	for _, hook := range e.hooks {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().Interface("panic", r).Str("task", taskID).Msg("post-run hook panicked")
+				}
+			}()
+			hook(ctx, a, task, result)
+		}()
+	}
+
 	return nil
+}
+
+// nextRoleMap is allocated once at package init. The previous implementation
+// allocated a new map on every call — wasteful since the mapping is static.
+var nextRoleMap = map[string]string{
+	"idea":      "architect",
+	"architect": "breakdown",
+	"breakdown": "coding",
+	"coding":    "test",
+	"test":      "review",
+	"review":    "deploy",
+	"deploy":    "notify",
+	"notify":    "—",
+	"docs":      "review",
 }
 
 // nextRole returns the conventional downstream role for a given upstream role.
 func nextRole(role string) string {
-	next := map[string]string{
-		"idea":      "architect",
-		"architect": "breakdown",
-		"breakdown": "coding",
-		"coding":    "test",
-		"test":      "review",
-		"review":    "deploy",
-		"deploy":    "notify",
-		"notify":    "—",
-		"docs":      "review",
-	}
-	if n, ok := next[role]; ok {
+	if n, ok := nextRoleMap[role]; ok {
 		return n
 	}
 	return "—"
@@ -255,7 +420,9 @@ func nextRole(role string) string {
 func isMemoryWorthy(task *Task) bool {
 	task.Lock()
 	role := task.AgentRole
-	tags := task.Tags
+	// Deep-copy tags to avoid iterating a shared backing array after unlock.
+	tags := make([]string, len(task.Tags))
+	copy(tags, task.Tags)
 	task.Unlock()
 
 	if role == "architect" || role == "idea" {
@@ -268,4 +435,14 @@ func isMemoryWorthy(task *Task) bool {
 		}
 	}
 	return false
+}
+
+// truncateForReflection truncates a string to maxLen for use in reflection data.
+// truncateForReflection returns the first maxLen runes. Safe for multi-byte UTF-8.
+func truncateForReflection(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen])
 }

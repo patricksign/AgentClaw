@@ -1,0 +1,345 @@
+{
+  "Anthropic": {
+    "models": [
+      {
+        "name": "Claude Opus 4.6",
+        "deprecated": false,
+        "pricing": {
+          "input": 5.0,
+          "cache_write_5m": 6.25,
+          "cache_write_1h": 10.0,
+          "cache_hit": 0.5,
+          "output": 25.0,
+          "batch_input": 2.5,
+          "batch_output": 12.5
+        }
+      },
+      {
+        "name": "Claude Opus 4.5",
+        "deprecated": false,
+        "pricing": {
+          "input": 5.0,
+          "cache_write_5m": 6.25,
+          "cache_write_1h": 10.0,
+          "cache_hit": 0.5,
+          "output": 25.0,
+          "batch_input": 2.5,
+          "batch_output": 12.5
+        }
+      },
+      {
+        "name": "Claude Opus 4.1",
+        "deprecated": false,
+        "pricing": {
+          "input": 15.0,
+          "cache_write_5m": 18.75,
+          "cache_write_1h": 30.0,
+          "cache_hit": 1.5,
+          "output": 75.0,
+          "batch_input": 7.5,
+          "batch_output": 37.5
+        }
+      },
+      {
+        "name": "Claude Opus 4",
+        "deprecated": false,
+        "pricing": {
+          "input": 15.0,
+          "cache_write_5m": 18.75,
+          "cache_write_1h": 30.0,
+          "cache_hit": 1.5,
+          "output": 75.0,
+          "batch_input": 7.5,
+          "batch_output": 37.5
+        }
+      },
+      {
+        "name": "Claude Sonnet 4.6",
+        "deprecated": false,
+        "pricing": {
+          "input": 3.0,
+          "cache_write_5m": 3.75,
+          "cache_write_1h": 6.0,
+          "cache_hit": 0.3,
+          "output": 15.0,
+          "batch_input": 1.5,
+          "batch_output": 7.5
+        }
+      },
+      {
+        "name": "Claude Sonnet 4.5",
+        "deprecated": false,
+        "pricing": {
+          "input": 3.0,
+          "cache_write_5m": 3.75,
+          "cache_write_1h": 6.0,
+          "cache_hit": 0.3,
+          "output": 15.0,
+          "batch_input": 1.5,
+          "batch_output": 7.5
+        }
+      },
+      {
+        "name": "Claude Sonnet 4",
+        "deprecated": false,
+        "pricing": {
+          "input": 3.0,
+          "cache_write_5m": 3.75,
+          "cache_write_1h": 6.0,
+          "cache_hit": 0.3,
+          "output": 15.0,
+          "batch_input": 1.5,
+          "batch_output": 7.5
+        }
+      },
+      {
+        "name": "Claude Sonnet 3.7",
+        "deprecated": true,
+        "pricing": {
+          "input": 3.0,
+          "cache_write_5m": 3.75,
+          "cache_write_1h": 6.0,
+          "cache_hit": 0.3,
+          "output": 15.0,
+          "batch_input": 1.5,
+          "batch_output": 7.5
+        }
+      },
+      {
+        "name": "Claude Haiku 4.5",
+        "deprecated": false,
+        "pricing": {
+          "input": 1.0,
+          "cache_write_5m": 1.25,
+          "cache_write_1h": 2.0,
+          "cache_hit": 0.1,
+          "output": 5.0,
+          "batch_input": 0.5,
+          "batch_output": 2.5
+        }
+      },
+      {
+        "name": "Claude Haiku 3.5",
+        "deprecated": false,
+        "pricing": {
+          "input": 0.8,
+          "cache_write_5m": 1.0,
+          "cache_write_1h": 1.6,
+          "cache_hit": 0.08,
+          "output": 4.0,
+          "batch_input": 0.4,
+          "batch_output": 2.0
+        }
+      },
+      {
+        "name": "Claude Opus 3",
+        "deprecated": true,
+        "pricing": {
+          "input": 15.0,
+          "cache_write_5m": 18.75,
+          "cache_write_1h": 30.0,
+          "cache_hit": 1.5,
+          "output": 75.0,
+          "batch_input": 7.5,
+          "batch_output": 37.5
+        }
+      },
+      {
+        "name": "Claude Haiku 3",
+        "deprecated": false,
+        "pricing": {
+          "input": 0.25,
+          "cache_write_5m": 0.3,
+          "cache_write_1h": 0.5,
+          "cache_hit": 0.03,
+          "output": 1.25,
+          "batch_input": 0.125,
+          "batch_output": 0.625
+        }
+      }
+    ],
+    "cache_multipliers": {
+      "write_5m": 1.25,
+      "write_1h": 2.0,
+      "hit": 0.1
+    },
+    "units": "USD per million tokens (MTok)",
+    "provider": "Anthropic"
+  },
+  "Z.AI (Zhipu)": {
+    "provider": "Z.AI (Zhipu)",
+    "units": "USD per million tokens (MTok)",
+    "models": [
+      {
+        "name": "GLM-5",
+        "pricing": {
+          "input": 1.0,
+          "cached_input": 0.2,
+          "cached_input_storage": "free_limited",
+          "output": 3.2
+        }
+      },
+      {
+        "name": "GLM-5-Turbo",
+        "pricing": {
+          "input": 1.2,
+          "cached_input": 0.24,
+          "cached_input_storage": "free_limited",
+          "output": 4.0
+        }
+      },
+      {
+        "name": "GLM-5-Code",
+        "pricing": {
+          "input": 1.2,
+          "cached_input": 0.3,
+          "cached_input_storage": "free_limited",
+          "output": 5.0
+        }
+      },
+      {
+        "name": "GLM-4.7",
+        "pricing": {
+          "input": 0.6,
+          "cached_input": 0.11,
+          "cached_input_storage": "free_limited",
+          "output": 2.2
+        }
+      },
+      {
+        "name": "GLM-4.7-FlashX",
+        "pricing": {
+          "input": 0.07,
+          "cached_input": 0.01,
+          "cached_input_storage": "free_limited",
+          "output": 0.4
+        }
+      },
+      {
+        "name": "GLM-4.6",
+        "pricing": {
+          "input": 0.6,
+          "cached_input": 0.11,
+          "cached_input_storage": "free_limited",
+          "output": 2.2
+        }
+      },
+      {
+        "name": "GLM-4.5",
+        "pricing": {
+          "input": 0.6,
+          "cached_input": 0.11,
+          "cached_input_storage": "free_limited",
+          "output": 2.2
+        }
+      },
+      {
+        "name": "GLM-4.5-X",
+        "pricing": {
+          "input": 2.2,
+          "cached_input": 0.45,
+          "cached_input_storage": "free_limited",
+          "output": 8.9
+        }
+      },
+      {
+        "name": "GLM-4.5-Air",
+        "pricing": {
+          "input": 0.2,
+          "cached_input": 0.03,
+          "cached_input_storage": "free_limited",
+          "output": 1.1
+        }
+      },
+      {
+        "name": "GLM-4.5-AirX",
+        "pricing": {
+          "input": 1.1,
+          "cached_input": 0.22,
+          "cached_input_storage": "free_limited",
+          "output": 4.5
+        }
+      },
+      {
+        "name": "GLM-4-32B-0414-128K",
+        "pricing": {
+          "input": 0.1,
+          "cached_input": null,
+          "cached_input_storage": null,
+          "output": 0.1
+        }
+      },
+      {
+        "name": "GLM-4.7-Flash",
+        "free": true,
+        "pricing": {
+          "input": 0,
+          "cached_input": 0,
+          "cached_input_storage": "free",
+          "output": 0
+        }
+      },
+      {
+        "name": "GLM-4.5-Flash",
+        "free": true,
+        "pricing": {
+          "input": 0,
+          "cached_input": 0,
+          "cached_input_storage": "free",
+          "output": 0
+        }
+      }
+    ]
+  },
+  "Minimax": {
+    "provider": "MiniMax",
+    "units": "USD per million tokens (MTok)",
+    "models": [
+      {
+        "name": "MiniMax-M2.7",
+        "pricing": {
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.06,
+          "cache_write": 0.375
+        }
+      },
+      {
+        "name": "MiniMax-M2.7-highspeed",
+        "pricing": {
+          "input": 0.6,
+          "output": 2.4,
+          "cache_read": 0.06,
+          "cache_write": 0.375
+        }
+      },
+      {
+        "name": "MiniMax-M2.5",
+        "pricing": {
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.03,
+          "cache_write": 0.375
+        }
+      },
+      {
+        "name": "MiniMax-M2.5-highspeed",
+        "pricing": {
+          "input": 0.6,
+          "output": 2.4,
+          "cache_read": 0.03,
+          "cache_write": 0.375
+        }
+      },
+      {
+        "name": "M2-her",
+        "pricing": {
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": null,
+          "cache_write": null
+        }
+      }
+    ]
+  }
+}

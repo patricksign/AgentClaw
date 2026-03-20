@@ -8,6 +8,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.32.0
+	golang.org/x/sync v0.20.0
 )
 
 require (

@@ -80,11 +80,15 @@ func NewResolvedStore(stateBaseDir string) (*ResolvedStore, error) {
 // are returned, sorted by score descending.
 func (r *ResolvedStore) Search(errorMsg string, agentRole string) ([]ErrorPattern, error) {
 	r.mu.Lock()
-	patterns, err := r.loadIndex()
-	r.mu.Unlock()
+	cached, err := r.loadIndex()
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
+	// Copy the slice under the lock so concurrent Save() cannot mutate our backing array.
+	patterns := make([]ErrorPattern, len(cached))
+	copy(patterns, cached)
+	r.mu.Unlock()
 
 	normalized := normalizeMsg(errorMsg)
 

@@ -1,12 +1,24 @@
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
+// Default pricing — overwritten by /api/pricing on load.
 const MODELS = {
     opus: { name: 'Claude Opus 4.6', color: '#a78bfa', inputPer1M: 5.00, outputPer1M: 25.00 },
     sonnet: { name: 'Claude Sonnet 4.6', color: '#60a5fa', inputPer1M: 3.00, outputPer1M: 15.00 },
     haiku: { name: 'Claude Haiku 4.5', color: '#f472b6', inputPer1M: 1.00, outputPer1M: 5.00 },
     minimax: { name: 'MiniMax M2.5', color: '#34d399', inputPer1M: 0.30, outputPer1M: 1.20 },
     glm: { name: 'GLM-4.5-Flash', color: '#fb923c', inputPer1M: 0.00, outputPer1M: 0.00 },
-    glm5: { name: 'GLM-5', color: '#fbbf24', inputPer1M: 0.72, outputPer1M: 2.30 },
+    'glm-flash': { name: 'GLM-4.5-Flash', color: '#fb923c', inputPer1M: 0.00, outputPer1M: 0.00 },
+    glm5: { name: 'GLM-5', color: '#fbbf24', inputPer1M: 1.00, outputPer1M: 3.20 },
 };
+
+// Sync pricing from backend on page load.
+fetch('/api/pricing').then(r => r.json()).then(entries => {
+    for (const e of entries) {
+        if (MODELS[e.alias]) {
+            MODELS[e.alias].inputPer1M = e.input_per_1m;
+            MODELS[e.alias].outputPer1M = e.output_per_1m;
+        }
+    }
+}).catch(() => { /* use defaults */ });
 
 const ROLES = [
     { id: 'idea', emoji: '🧠', name: 'Idea Agent', desc: 'Vision & concept' },

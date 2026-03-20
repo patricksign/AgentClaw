@@ -1,7 +1,9 @@
 package memory
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +16,10 @@ import (
 	"github.com/patricksign/agentclaw/internal/agent"
 	"github.com/patricksign/agentclaw/internal/state"
 )
+
+// dbTimeout is the default timeout for SQLite operations.
+// SQLite is local disk I/O; 5s is generous for any single query.
+const dbTimeout = 5 * time.Second
 
 // Store manages the 3-layer memory architecture.
 type Store struct {
@@ -81,11 +87,22 @@ func (s *Store) ReadScratchpadContext() string {
 }
 
 func New(dbPath, projectPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal=WAL")
+	db, err := sql.Open("sqlite3", dbPath+"?_journal=WAL&_busy_timeout=5000&_synchronous=NORMAL")
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	// WAL mode supports concurrent readers with a single writer.
+	// With 9 role workers + summarizer + API handlers, we need enough
+	// read connections to avoid blocking. SQLite serialises writes
+	// internally via _busy_timeout.
+	//
+	// _synchronous=NORMAL is safe with WAL — data is durable against
+	// application crashes (only OS crash can lose last txn, acceptable
+	// for task metadata).
+	// 9 role workers + cron + API handlers + pipeline goroutines need concurrent reads.
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(30 * time.Minute) // recycle connections to avoid stale state
 
 	s := &Store{db: db, projectPath: projectPath}
 	return s, s.migrate()
@@ -128,9 +145,14 @@ func NewWithState(dbPath, projectPath, stateBaseDir string) (*Store, error) {
 	return s, nil
 }
 
-// Close flushes the WAL and closes the database connection.
-// Must be called on graceful shutdown to avoid data loss.
+// Close checkpoints the WAL and closes the database connection.
+// The PRAGMA wal_checkpoint(TRUNCATE) ensures all WAL data is written back
+// to the main database file before closing — prevents data loss on unclean
+// restarts where the WAL file might be deleted or corrupted.
 func (s *Store) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _ = s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	return s.db.Close()
 }
 
@@ -181,7 +203,46 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_logs_task     ON token_logs(task_id);
 		CREATE INDEX IF NOT EXISTS idx_logs_created  ON token_logs(created_at);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.migratePreExecColumns()
+}
+
+// migratePreExecColumns adds the pre-execution protocol columns to existing databases.
+// Uses ALTER TABLE ... ADD COLUMN IF NOT EXISTS pattern — no-ops on fresh DBs.
+func (s *Store) migratePreExecColumns() error {
+	cols := []struct {
+		name       string
+		definition string
+	}{
+		{"phase", "TEXT NOT NULL DEFAULT 'understand'"},
+		{"understanding", "TEXT NOT NULL DEFAULT ''"},
+		{"assumptions", "TEXT NOT NULL DEFAULT '[]'"},
+		{"risks", "TEXT NOT NULL DEFAULT '[]'"},
+		{"questions", "TEXT NOT NULL DEFAULT '[]'"},
+		{"implement_plan", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_approved_by", "TEXT NOT NULL DEFAULT ''"},
+		{"redirect_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"phase_started_at", "DATETIME"},
+	}
+	for _, col := range cols {
+		// SQLite does not support IF NOT EXISTS on ALTER TABLE ADD COLUMN,
+		// so we attempt the ALTER and ignore "duplicate column" errors.
+		_, err := s.db.Exec(fmt.Sprintf(
+			"ALTER TABLE tasks ADD COLUMN %s %s", col.name, col.definition,
+		))
+		if err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("migratePreExecColumns: add %s: %w", col.name, err)
+		}
+	}
+	return nil
+}
+
+// isDuplicateColumnError returns true for SQLite "duplicate column name" errors
+// which arise when ALTER TABLE ADD COLUMN is called on an already-migrated DB.
+func isDuplicateColumnError(err error) bool {
+	return strings.Contains(err.Error(), "duplicate column name")
 }
 
 // ─── LAYER 1: Project Memory ─────────────────────────────────────────────────
@@ -221,36 +282,89 @@ func (s *Store) SaveTask(t *agent.Task) error {
 	}
 	status, priority := t.Status, t.Priority
 	inTok, outTok, cost, retries, createdAt := t.InputTokens, t.OutputTokens, t.CostUSD, t.Retries, t.CreatedAt
+
+	// Pre-execution protocol fields.
+	phase := string(t.Phase)
+	if phase == "" {
+		phase = "understand"
+	}
+	understanding := t.Understanding
+	assumptions, _ := marshalJSONField(t.Assumptions)
+	risks, _ := marshalJSONField(t.Risks)
+	questions, _ := marshalJSONField(t.Questions)
+	implementPlan := t.ImplementPlan
+	planApprovedBy := t.PlanApprovedBy
+	redirectCount := t.RedirectCount
+	phaseStartedAt := t.PhaseStartedAt
 	t.Unlock()
 
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO tasks
-		(id,title,description,agent_role,assigned_to,complexity,status,priority,depends_on,tags,input_tokens,output_tokens,cost_usd,retries,created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// UPSERT: INSERT on first save, UPDATE on subsequent saves.
+	// Faster than INSERT OR REPLACE which deletes and re-inserts the row.
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO tasks
+		(id,title,description,agent_role,assigned_to,complexity,status,priority,depends_on,tags,
+		 input_tokens,output_tokens,cost_usd,retries,created_at,
+		 phase,understanding,assumptions,risks,questions,implement_plan,plan_approved_by,redirect_count,phase_started_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+		 title=excluded.title, description=excluded.description,
+		 agent_role=excluded.agent_role, assigned_to=excluded.assigned_to,
+		 complexity=excluded.complexity, status=excluded.status, priority=excluded.priority,
+		 depends_on=excluded.depends_on, tags=excluded.tags,
+		 input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
+		 cost_usd=excluded.cost_usd, retries=excluded.retries,
+		 phase=excluded.phase, understanding=excluded.understanding,
+		 assumptions=excluded.assumptions, risks=excluded.risks, questions=excluded.questions,
+		 implement_plan=excluded.implement_plan, plan_approved_by=excluded.plan_approved_by,
+		 redirect_count=excluded.redirect_count, phase_started_at=excluded.phase_started_at`,
 		id, title, desc, role, assigned, complexity,
 		status, priority, deps, tags,
 		inTok, outTok, cost, retries, createdAt,
+		phase, understanding, assumptions, risks, questions,
+		implementPlan, planApprovedBy, redirectCount, phaseStartedAt,
 	)
 	return err
 }
 
+// marshalJSONField marshals a value to a JSON string for SQLite storage.
+// Returns "[]" on nil slices and "{}" on nil maps.
+func marshalJSONField(v any) (string, error) {
+	if v == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "[]", err
+	}
+	return string(b), nil
+}
+
 func (s *Store) UpdateTaskStatus(id string, status agent.TaskStatus) error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
 	now := time.Now()
 	switch status {
 	case agent.TaskRunning:
-		_, err := s.db.Exec(`UPDATE tasks SET status=?, started_at=? WHERE id=?`, status, now, id)
+		_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status=?, started_at=? WHERE id=?`, status, now, id)
 		return err
 	case agent.TaskDone, agent.TaskFailed:
-		_, err := s.db.Exec(`UPDATE tasks SET status=?, finished_at=? WHERE id=?`, status, now, id)
+		_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status=?, finished_at=? WHERE id=?`, status, now, id)
 		return err
 	default:
-		_, err := s.db.Exec(`UPDATE tasks SET status=? WHERE id=?`, status, id)
+		_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status=? WHERE id=?`, status, id)
 		return err
 	}
 }
 
 func (s *Store) AddTokens(taskID string, in, out int64, cost float64) error {
-	_, err := s.db.Exec(`
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET
 			input_tokens  = input_tokens  + ?,
 			output_tokens = output_tokens + ?,
@@ -261,7 +375,10 @@ func (s *Store) AddTokens(taskID string, in, out int64, cost float64) error {
 
 // RecentByRole returns the N most recent completed tasks for a given role.
 func (s *Store) RecentByRole(role string, n int) ([]*agent.Task, error) {
-	rows, err := s.db.Query(`
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id,title,description,agent_role,status,cost_usd,created_at
 		FROM tasks WHERE agent_role=? AND status IN ('done','failed')
 		ORDER BY created_at DESC LIMIT ?`, role, n)
@@ -292,8 +409,11 @@ func escapeLike(s string) string {
 
 // SearchTasks finds completed tasks matching the query in title or description.
 func (s *Store) SearchTasks(query string, limit int) ([]*agent.Task, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
 	like := "%" + escapeLike(query) + "%"
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id,title,description,agent_role,status,cost_usd,created_at
 		FROM tasks WHERE (title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\') AND status='done'
 		ORDER BY created_at DESC LIMIT ?`, like, like, limit)
@@ -317,7 +437,10 @@ func (s *Store) SearchTasks(query string, limit int) ([]*agent.Task, error) {
 
 // SaveADR persists an architecture decision record.
 func (s *Store) SaveADR(title, decision string) error {
-	_, err := s.db.Exec(
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO adr (title, decision, created_at) VALUES (?, ?, ?)`,
 		title, decision, time.Now(),
 	)
@@ -326,7 +449,10 @@ func (s *Store) SaveADR(title, decision string) error {
 
 // ListADRs returns all ADRs ordered by creation time.
 func (s *Store) ListADRs() ([]string, error) {
-	rows, err := s.db.Query(
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT title, decision FROM adr ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -403,8 +529,12 @@ func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) agent.
 	rawProjectDoc := s.ReadProjectDoc()
 
 	if complexity == "M" || complexity == "L" {
-		// RecentByRole: last 3 completed tasks for this role.
-		recent, err := s.RecentByRole(role, 3)
+		// RecentByRole: fetch 5 for L, 3 for M — single query avoids redundant DB call.
+		recentLimit := 3
+		if complexity == "L" {
+			recentLimit = 5
+		}
+		recent, err := s.RecentByRole(role, recentLimit)
 		if err != nil {
 			log.Warn().Err(err).Str("role", role).Msg("BuildContext: RecentByRole failed")
 		} else {
@@ -436,20 +566,17 @@ func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) agent.
 			}
 		}
 
-		// Project doc: first 800 tokens only.
-		ctx.ProjectDoc = truncateToTokens(rawProjectDoc, 800)
+		// Project doc: first 800 tokens only (M), full 2000 tokens (L).
+		if complexity == "L" {
+			ctx.ProjectDoc = truncateToTokens(rawProjectDoc, 2000)
+		} else {
+			ctx.ProjectDoc = truncateToTokens(rawProjectDoc, 800)
+		}
 	}
 
 	// ── Tier 3 — L only ──────────────────────────────────────────────────
 
 	if complexity == "L" {
-		// Extend to 5 recent tasks.
-		if full, err := s.RecentByRole(role, 5); err == nil {
-			ctx.RecentTasks = full
-		}
-
-		// Full project doc (cap 2000 tokens) — reuses the already-read rawProjectDoc.
-		ctx.ProjectDoc = truncateToTokens(rawProjectDoc, 2000)
 
 		// Cross-agent awareness via ScopeStore.ReadAll().
 		if s.scope != nil {
@@ -491,7 +618,10 @@ type TokenLog struct {
 }
 
 func (s *Store) LogTokens(l TokenLog) error {
-	_, err := s.db.Exec(`
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO token_logs (task_id,agent_id,model,input_tokens,output_tokens,cost_usd,duration_ms,created_at)
 		VALUES (?,?,?,?,?,?,?,?)`,
 		l.TaskID, l.AgentID, l.Model, l.InputTokens, l.OutputTokens,
@@ -515,7 +645,10 @@ func (s *Store) LogTokenUsage(taskID, agentID, model string, in, out int64, cost
 
 // GetTokenLogs returns all token logs for a task ordered by creation time.
 func (s *Store) GetTokenLogs(taskID string) ([]TokenLog, error) {
-	rows, err := s.db.Query(`
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT task_id,agent_id,model,input_tokens,output_tokens,cost_usd,duration_ms,created_at
 		FROM token_logs WHERE task_id=? ORDER BY created_at ASC`, taskID)
 	if err != nil {
@@ -547,8 +680,11 @@ type PeriodStats struct {
 }
 
 func (s *Store) StatsForPeriod(dateExpr string) (*PeriodStats, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
 	st := &PeriodStats{Period: dateExpr}
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*),
 		       SUM(CASE WHEN status='done' THEN 1 ELSE 0 END),
 		       COALESCE(SUM(input_tokens+output_tokens),0),
@@ -562,8 +698,11 @@ func (s *Store) StatsForPeriod(dateExpr string) (*PeriodStats, error) {
 }
 
 func (s *Store) StatsForRange(from, to string) (*PeriodStats, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
 	st := &PeriodStats{Period: from + " to " + to}
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*),
 		       SUM(CASE WHEN status='done' THEN 1 ELSE 0 END),
 		       COALESCE(SUM(input_tokens+output_tokens),0),
@@ -578,13 +717,21 @@ func (s *Store) StatsForRange(from, to string) (*PeriodStats, error) {
 
 // ─── Task queries ─────────────────────────────────────────────────────────────
 
+// taskSelectCols is the common SELECT column list used by ListTasks and GetTask.
+const taskSelectCols = `id,title,description,agent_role,assigned_to,complexity,status,priority,
+       depends_on,tags,input_tokens,output_tokens,cost_usd,retries,
+       created_at,started_at,finished_at,
+       COALESCE(phase,'understand'),COALESCE(understanding,''),
+       COALESCE(assumptions,'[]'),COALESCE(risks,'[]'),COALESCE(questions,'[]'),
+       COALESCE(implement_plan,''),COALESCE(plan_approved_by,''),
+       COALESCE(redirect_count,0),phase_started_at`
+
 // ListTasks returns all tasks ordered by created_at DESC.
 func (s *Store) ListTasks() ([]*agent.Task, error) {
-	rows, err := s.db.Query(`
-		SELECT id,title,description,agent_role,assigned_to,complexity,status,priority,
-		       depends_on,tags,input_tokens,output_tokens,cost_usd,retries,
-		       created_at,started_at,finished_at
-		FROM tasks ORDER BY created_at DESC`)
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, `SELECT `+taskSelectCols+` FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -603,12 +750,36 @@ func (s *Store) ListTasks() ([]*agent.Task, error) {
 
 // GetTask returns a single task by ID.
 func (s *Store) GetTask(id string) (*agent.Task, error) {
-	row := s.db.QueryRow(`
-		SELECT id,title,description,agent_role,assigned_to,complexity,status,priority,
-		       depends_on,tags,input_tokens,output_tokens,cost_usd,retries,
-		       created_at,started_at,finished_at
-		FROM tasks WHERE id=?`, id)
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	row := s.db.QueryRowContext(ctx, `SELECT `+taskSelectCols+` FROM tasks WHERE id=?`, id)
 	return scanTask(row)
+}
+
+// ListTasksByPhase returns all tasks in a given execution phase that have the given status.
+func (s *Store) ListTasksByPhase(phase agent.ExecutionPhase, status agent.TaskStatus) ([]*agent.Task, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+taskSelectCols+` FROM tasks WHERE COALESCE(phase,'understand')=? AND status=?`,
+		string(phase), string(status),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []*agent.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
 }
 
 type scannable interface {
@@ -618,12 +789,18 @@ type scannable interface {
 func scanTask(row scannable) (*agent.Task, error) {
 	t := &agent.Task{}
 	var deps, tags string
-	var startedAt, finishedAt sql.NullTime
+	var startedAt, finishedAt, phaseStartedAt sql.NullTime
+	var phase, understanding, assumptions, risks, questions string
+	var implementPlan, planApprovedBy string
+	var redirectCount int
+
 	err := row.Scan(
 		&t.ID, &t.Title, &t.Description, &t.AgentRole, &t.AssignedTo, &t.Complexity,
 		&t.Status, &t.Priority, &deps, &tags,
 		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.Retries,
 		&t.CreatedAt, &startedAt, &finishedAt,
+		&phase, &understanding, &assumptions, &risks, &questions,
+		&implementPlan, &planApprovedBy, &redirectCount, &phaseStartedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -640,5 +817,34 @@ func scanTask(row scannable) (*agent.Task, error) {
 	if finishedAt.Valid {
 		t.FinishedAt = &finishedAt.Time
 	}
+
+	// Pre-execution protocol fields.
+	t.Phase = agent.ExecutionPhase(phase)
+	t.Understanding = understanding
+	t.ImplementPlan = implementPlan
+	t.PlanApprovedBy = planApprovedBy
+	t.RedirectCount = redirectCount
+	if phaseStartedAt.Valid {
+		t.PhaseStartedAt = phaseStartedAt.Time
+	}
+
+	// Unmarshal JSON-encoded slices. Errors are propagated (E2) — corrupted JSON
+	// in the DB would otherwise silently skip the clarification phase.
+	if assumptions != "" && assumptions != "[]" {
+		if err := json.Unmarshal([]byte(assumptions), &t.Assumptions); err != nil {
+			return nil, fmt.Errorf("scanTask: unmarshal assumptions: %w", err)
+		}
+	}
+	if risks != "" && risks != "[]" {
+		if err := json.Unmarshal([]byte(risks), &t.Risks); err != nil {
+			return nil, fmt.Errorf("scanTask: unmarshal risks: %w", err)
+		}
+	}
+	if questions != "" && questions != "[]" {
+		if err := json.Unmarshal([]byte(questions), &t.Questions); err != nil {
+			return nil, fmt.Errorf("scanTask: unmarshal questions: %w", err)
+		}
+	}
+
 	return t, nil
 }

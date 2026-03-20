@@ -4,42 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"strings"
+	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // maxResponseBytes caps LLM API response bodies to prevent OOM from malformed
 // or adversarial upstream responses (10 MiB is well above any real completion).
 const maxResponseBytes = 10 << 20 // 10 MiB
-
-// ─── Pricing ─────────────────────────────────────────────────────────────────
-
-type pricing struct {
-	InputPer1M  float64
-	OutputPer1M float64
-}
-
-var modelPricing = map[string]pricing{
-	"opus":      {5.00, 25.00},
-	"sonnet":    {3.00, 15.00},
-	"haiku":     {1.00, 5.00},
-	"minimax":   {0.30, 1.20},
-	"glm5":      {0.72, 2.30},
-	"glm-flash": {0.00, 0.00},
-}
-
-func CalcCost(model string, in, out int64) float64 {
-	p, ok := modelPricing[model]
-	if !ok {
-		return 0
-	}
-	return float64(in)/1e6*p.InputPer1M + float64(out)/1e6*p.OutputPer1M
-}
 
 // ─── Request / Response ───────────────────────────────────────────────────────
 
@@ -48,21 +27,34 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+// CacheControl specifies prompt caching behaviour for Anthropic API calls.
+type CacheControl struct {
+	// CacheSystem caches the system prompt (stable across tasks for the same role).
+	CacheSystem bool `json:"cache_system,omitempty"`
+	// TTL is the cache time-to-live: "5m" (ephemeral) or "1h" (persistent).
+	// Defaults to "5m" if CacheSystem is true and TTL is empty.
+	TTL string `json:"ttl,omitempty"`
+}
+
 type Request struct {
-	Model     string    `json:"model"`   // "opus"|"sonnet"|"minimax"|"glm5"|"glm-flash"
-	System    string    `json:"system,omitempty"`
-	Messages  []Message `json:"messages"`
-	MaxTokens int       `json:"max_tokens"`
-	TaskID    string    `json:"-"` // for logging only
+	Model        string        `json:"model"`   // "opus"|"sonnet"|"minimax"|"glm5"|"glm-flash"
+	System       string        `json:"system,omitempty"`
+	Messages     []Message     `json:"messages"`
+	MaxTokens    int           `json:"max_tokens"`
+	TaskID       string        `json:"-"`                       // for logging only
+	CacheControl *CacheControl `json:"cache_control,omitempty"` // prompt caching (Anthropic only)
+	BatchMode    bool          `json:"batch_mode,omitempty"`    // use batch API (async, 50% cheaper)
 }
 
 type Response struct {
-	Content      string  `json:"content"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
-	ModelUsed    string  `json:"model_used"`
-	DurationMs   int64   `json:"duration_ms"`
+	Content      string   `json:"content"`
+	InputTokens  int64    `json:"input_tokens"`
+	OutputTokens int64    `json:"output_tokens"`
+	CacheTokens  int64    `json:"cache_tokens,omitempty"`  // tokens served from cache
+	CostUSD      float64  `json:"cost_usd"`
+	CostMode     CostMode `json:"cost_mode,omitempty"`     // pricing mode used
+	ModelUsed    string   `json:"model_used"`
+	DurationMs   int64    `json:"duration_ms"`
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -71,8 +63,13 @@ type Response struct {
 // Keys in env override the corresponding environment variables, allowing
 // per-agent API key configuration without touching the global environment.
 type Router struct {
-	client *http.Client
-	env    map[string]string // per-agent key overrides (optional)
+	client   *http.Client
+	env      map[string]string // per-agent key overrides (optional)
+	breakers *breakerRegistry  // per-provider circuit breakers
+	stats    struct {
+		mu    sync.Mutex
+		calls map[string]int64 // provider → call count
+	}
 }
 
 // newTransport returns an isolated http.Transport that dials IPv4 only.
@@ -98,25 +95,31 @@ func newTransport() *http.Transport {
 }
 
 func NewRouter() *Router {
-	return &Router{
+	r := &Router{
 		client: &http.Client{
 			Timeout:   120 * time.Second,
 			Transport: newTransport(),
 		},
+		breakers: newBreakerRegistry(),
 	}
+	r.stats.calls = make(map[string]int64)
+	return r
 }
 
 // NewRouterWithEnv creates a Router that uses per-agent key overrides.
 // Keys present in env take precedence over OS environment variables.
 // Recognised keys: ANTHROPIC_API_KEY, MINIMAX_API_KEY, GLM_API_KEY.
 func NewRouterWithEnv(env map[string]string) *Router {
-	return &Router{
+	r := &Router{
 		client: &http.Client{
 			Timeout:   120 * time.Second,
 			Transport: newTransport(),
 		},
-		env: env,
+		env:      env,
+		breakers: newBreakerRegistry(),
 	}
+	r.stats.calls = make(map[string]int64)
+	return r
 }
 
 // getenv returns the value for key, preferring the per-agent env map over
@@ -134,6 +137,13 @@ func (r *Router) Call(ctx context.Context, req Request) (*Response, error) {
 	start := time.Now()
 	var resp *Response
 	var err error
+
+	provider := providerForModel(req.Model)
+
+	// Circuit breaker: reject fast if the provider is known to be down.
+	if cbErr := r.breakers.get(provider).allow(); cbErr != nil {
+		return nil, fmt.Errorf("llm %s: %w", provider, cbErr)
+	}
 
 	switch req.Model {
 	case "opus", "sonnet", "haiku":
@@ -159,23 +169,85 @@ func (r *Router) Call(ctx context.Context, req Request) (*Response, error) {
 		return nil, fmt.Errorf("unknown model: %s", req.Model)
 	}
 
+	// Record success/failure in the circuit breaker.
+	cb := r.breakers.get(provider)
 	if err != nil {
+		if !isPermanentError(err) {
+			cb.recordFailure(err)
+		}
 		return nil, err
 	}
+	cb.recordSuccess()
+
+	// Track per-provider call counts.
+	r.stats.mu.Lock()
+	r.stats.calls[provider]++
+	r.stats.mu.Unlock()
+
 	resp.DurationMs = time.Since(start).Milliseconds()
-	resp.CostUSD = CalcCost(req.Model, resp.InputTokens, resp.OutputTokens)
+
+	// Use advanced cost calculation when cache or batch mode is active.
+	// Cost calculation errors (unknown model) are logged but do not fail the call —
+	// the response content is still valid.
+	if req.BatchMode {
+		resp.CostMode = CostModeBatch
+	}
+	if resp.CostMode != "" {
+		cost, costErr := CalcCostAdvanced(req.Model, resp.InputTokens, resp.OutputTokens, resp.CacheTokens, resp.CostMode)
+		if costErr != nil {
+			log.Warn().Str("model", req.Model).Str("mode", string(resp.CostMode)).Msg("cost calculation failed — reporting $0")
+			resp.CostUSD = 0
+		} else {
+			resp.CostUSD = cost
+		}
+	} else {
+		cost, costErr := CalcCost(req.Model, resp.InputTokens, resp.OutputTokens)
+		if costErr != nil {
+			log.Warn().Str("model", req.Model).Msg("cost calculation failed — reporting $0")
+			resp.CostUSD = 0
+		} else {
+			resp.CostUSD = cost
+		}
+	}
 	return resp, nil
 }
 
-// isPermanentError returns true for 4xx HTTP errors (auth, bad request, etc.)
-// which should not trigger a fallback.
-func isPermanentError(err error) bool {
-	msg := err.Error()
-	for _, code := range []string{"400", "401", "403", "404", "422"} {
-		if strings.Contains(msg, code) {
-			return true
-		}
+// providerForModel returns the provider name for circuit breaker grouping.
+func providerForModel(model string) string {
+	switch model {
+	case "opus", "sonnet", "haiku":
+		return "anthropic"
+	case "minimax":
+		return "minimax"
+	case "glm5", "glm-flash":
+		return "glm"
+	default:
+		return model
 	}
+}
+
+// httpStatusError is a typed error that carries the HTTP status code.
+// Used by provider call functions so isPermanentError can inspect the code
+// directly instead of relying on fragile string matching.
+type httpStatusError struct {
+	StatusCode int
+	Provider   string
+	Body       string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s %d: %s", e.Provider, e.StatusCode, e.Body)
+}
+
+// isPermanentError returns true for 4xx HTTP errors (auth, bad request, etc.)
+// which should not trigger a fallback. Uses typed httpStatusError when available,
+// falls back to string matching for wrapped errors.
+func isPermanentError(err error) bool {
+	var httpErr *httpStatusError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500
+	}
+	// Fallback for errors that don't carry status code (e.g. network errors).
 	return false
 }
 
@@ -204,7 +276,24 @@ func (r *Router) callAnthropic(ctx context.Context, req Request) (*Response, err
 		"messages":   req.Messages,
 	}
 	if req.System != "" {
-		body["system"] = req.System
+		if req.CacheControl != nil && req.CacheControl.CacheSystem {
+			// Use structured system prompt with cache_control block.
+			ttl := req.CacheControl.TTL
+			if ttl == "" {
+				ttl = "ephemeral"
+			}
+			body["system"] = []map[string]any{
+				{
+					"type": "text",
+					"text": req.System,
+					"cache_control": map[string]string{
+						"type": ttl,
+					},
+				},
+			}
+		} else {
+			body["system"] = req.System
+		}
 	}
 
 	data, err := json.Marshal(body)
@@ -232,8 +321,13 @@ func (r *Router) callAnthropic(ctx context.Context, req Request) (*Response, err
 	if err != nil {
 		return nil, fmt.Errorf("read anthropic response: %w", err)
 	}
+
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic %d: %s", httpResp.StatusCode, raw)
+		return nil, &httpStatusError{
+			StatusCode: httpResp.StatusCode,
+			Provider:   "anthropic",
+			Body:       truncateErrorBody(raw),
+		}
 	}
 
 	var out struct {
@@ -241,8 +335,10 @@ func (r *Router) callAnthropic(ctx context.Context, req Request) (*Response, err
 			Text string `json:"text"`
 		} `json:"content"`
 		Usage struct {
-			Input  int64 `json:"input_tokens"`
-			Output int64 `json:"output_tokens"`
+			Input            int64 `json:"input_tokens"`
+			Output           int64 `json:"output_tokens"`
+			CacheCreation    int64 `json:"cache_creation_input_tokens"`
+			CacheRead        int64 `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -253,10 +349,23 @@ func (r *Router) callAnthropic(ctx context.Context, req Request) (*Response, err
 	if len(out.Content) > 0 {
 		content = out.Content[0].Text
 	}
+
+	cacheTokens := out.Usage.CacheRead + out.Usage.CacheCreation
+	var costMode CostMode
+	if cacheTokens > 0 {
+		if out.Usage.CacheRead > out.Usage.CacheCreation {
+			costMode = CostModeCacheHit
+		} else {
+			costMode = CostModeCacheWrite
+		}
+	}
+
 	return &Response{
 		Content:      content,
 		InputTokens:  out.Usage.Input,
 		OutputTokens: out.Usage.Output,
+		CacheTokens:  cacheTokens,
+		CostMode:     costMode,
 		ModelUsed:    req.Model,
 	}, nil
 }
@@ -302,8 +411,13 @@ func (r *Router) callMinimax(ctx context.Context, req Request) (*Response, error
 	if err != nil {
 		return nil, fmt.Errorf("read minimax response: %w", err)
 	}
+
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("minimax %d: %s", httpResp.StatusCode, raw)
+		return nil, &httpStatusError{
+			StatusCode: httpResp.StatusCode,
+			Provider:   "minimax",
+			Body:       truncateErrorBody(raw),
+		}
 	}
 
 	var out struct {
@@ -379,8 +493,13 @@ func (r *Router) callGLM(ctx context.Context, req Request) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read glm response: %w", err)
 	}
+
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("glm %d: %s", httpResp.StatusCode, raw)
+		return nil, &httpStatusError{
+			StatusCode: httpResp.StatusCode,
+			Provider:   "glm",
+			Body:       truncateErrorBody(raw),
+		}
 	}
 
 	var out struct {
@@ -408,4 +527,26 @@ func (r *Router) callGLM(ctx context.Context, req Request) (*Response, error) {
 		OutputTokens: out.Usage.Completion,
 		ModelUsed:    req.Model,
 	}, nil
+}
+
+// Stats returns per-provider call counts.
+func (r *Router) Stats() map[string]int64 {
+	r.stats.mu.Lock()
+	defer r.stats.mu.Unlock()
+	out := make(map[string]int64, len(r.stats.calls))
+	for k, v := range r.stats.calls {
+		out[k] = v
+	}
+	return out
+}
+
+// truncateErrorBody caps the API error response body at 200 bytes to prevent
+// leaking internal API details (account info, rate limit metadata) in error
+// messages that may propagate to logs or HTTP responses.
+func truncateErrorBody(raw []byte) string {
+	const maxErrBytes = 200
+	if len(raw) <= maxErrBytes {
+		return string(raw)
+	}
+	return string(raw[:maxErrBytes]) + "...(truncated)"
 }

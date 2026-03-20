@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"os"
 
@@ -34,7 +35,9 @@ func (s *Server) compressState(w http.ResponseWriter, r *http.Request) {
 
 	// Require the admin token when ADMIN_TOKEN env var is set.
 	if adminToken := os.Getenv("ADMIN_TOKEN"); adminToken != "" {
-		if r.Header.Get("X-Admin-Token") != adminToken {
+		got := r.Header.Get("X-Admin-Token")
+		// Constant-time comparison prevents timing side-channel attacks.
+		if subtle.ConstantTimeCompare([]byte(got), []byte(adminToken)) != 1 {
 			errJSON(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -45,7 +48,7 @@ func (s *Server) compressState(w http.ResponseWriter, r *http.Request) {
 		Role    string `json:"role"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		errJSON(w, http.StatusInternalServerError, "invalid JSON")
+		errJSON(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 

@@ -38,16 +38,25 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.hub.connect(conn)
 }
 
-// forwardEvents subscribe EventBus → broadcast to all WS clients
+// forwardEvents subscribes to EventBus and broadcasts to all WS clients.
+// Exits when the server context is cancelled (Shutdown) or the bus channel closes.
 func (s *Server) forwardEvents() {
 	ch, unsub := s.bus.Subscribe("ws-hub")
 	defer unsub()
-	for evt := range ch {
-		data, err := json.Marshal(evt)
-		if err != nil {
-			continue
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(evt)
+			if err != nil {
+				continue
+			}
+			s.hub.broadcast <- data
+		case <-s.ctx.Done():
+			return
 		}
-		s.hub.broadcast <- data
 	}
 }
 
@@ -58,11 +67,16 @@ type wsClient struct {
 	send chan []byte
 }
 
+// maxWSClients caps the number of concurrent WebSocket connections to prevent
+// resource exhaustion (each connection spawns 2 goroutines + 64-msg buffer).
+const maxWSClients = 100
+
 type wsHub struct {
 	clients    map[*wsClient]bool
 	broadcast  chan []byte
 	register   chan *wsClient
 	unregister chan *wsClient
+	stop       chan struct{}
 }
 
 func newWsHub() *wsHub {
@@ -71,13 +85,33 @@ func newWsHub() *wsHub {
 		broadcast:  make(chan []byte, 256),
 		register:   make(chan *wsClient),
 		unregister: make(chan *wsClient),
+		stop:       make(chan struct{}),
 	}
+}
+
+// shutdown signals the hub loop to stop and closes all connected clients.
+func (h *wsHub) shutdown() {
+	close(h.stop)
 }
 
 func (h *wsHub) run() {
 	for {
 		select {
+		case <-h.stop:
+			// Close every remaining client on shutdown.
+			for c := range h.clients {
+				close(c.send)
+			}
+			h.clients = make(map[*wsClient]bool)
+			return
+
 		case c := <-h.register:
+			if len(h.clients) >= maxWSClients {
+				close(c.send)
+				c.conn.Close()
+				log.Warn().Int("total", len(h.clients)).Msg("ws client rejected: max connections reached")
+				continue
+			}
 			h.clients[c] = true
 			log.Debug().Int("total", len(h.clients)).Msg("ws client connected")
 
@@ -103,14 +137,24 @@ func (h *wsHub) run() {
 
 func (h *wsHub) connect(conn *websocket.Conn) {
 	c := &wsClient{conn: conn, send: make(chan []byte, 64)}
-	h.register <- c
+	// Non-blocking register: if hub is shutting down, close immediately.
+	select {
+	case h.register <- c:
+	case <-h.stop:
+		conn.Close()
+		return
+	}
 
 	// unregisterOnce ensures exactly one unregister + conn.Close regardless
 	// of which pump detects the disconnect first, preventing double-close panics.
+	// The select on h.stop prevents blocking if hub.run() has already exited.
 	var unregisterOnce sync.Once
 	cleanup := func() {
 		unregisterOnce.Do(func() {
-			h.unregister <- c
+			select {
+			case h.unregister <- c:
+			case <-h.stop:
+			}
 			conn.Close()
 		})
 	}

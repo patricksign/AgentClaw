@@ -1,11 +1,17 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/rs/zerolog/log"
 )
+
+// maxConcurrentPipelines limits how many trigger pipelines can run simultaneously.
+// Each pipeline makes multiple LLM calls and can run for minutes.
+const maxConcurrentPipelines = 5
+
+// pipelineSem is a counting semaphore that limits concurrent pipeline executions.
+var pipelineSem = make(chan struct{}, maxConcurrentPipelines)
 
 func (s *Server) HandlerTrigger(mux *http.ServeMux) {
 	// Trigger pipeline
@@ -28,11 +34,11 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		TicketID    string `json:"ticket_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		errJSON(w, http.StatusInternalServerError, "invalid JSON")
+		errJSON(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if req.WorkspaceID == "" || req.TicketID == "" {
-		errJSON(w, http.StatusInternalServerError, "workspace_id and ticket_id are required")
+		errJSON(w, http.StatusBadRequest, "workspace_id and ticket_id are required")
 		return
 	}
 
@@ -48,8 +54,17 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		"ticket_id":    req.TicketID,
 	})
 
+	// Acquire semaphore slot — reject if at capacity.
+	select {
+	case pipelineSem <- struct{}{}:
+	default:
+		errJSON(w, http.StatusTooManyRequests, "too many concurrent pipelines, try again later")
+		return
+	}
+
 	go func() {
-		if err := s.triggerSvc.Run(context.Background(), req.WorkspaceID, req.TicketID); err != nil {
+		defer func() { <-pipelineSem }()
+		if err := s.triggerSvc.Run(s.ctx, req.WorkspaceID, req.TicketID); err != nil {
 			log.Error().Err(err).
 				Str("workspace_id", req.WorkspaceID).
 				Str("ticket_id", req.TicketID).

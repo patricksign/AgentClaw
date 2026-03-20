@@ -31,10 +31,10 @@ const (
 
 // Client is a GitHub REST API client.
 type Client struct {
-	token  string
-	owner  string
-	repo   string
-	http   *http.Client
+	token string
+	owner string
+	repo  string
+	http  *http.Client
 }
 
 // newTransport returns an isolated, IPv4-only transport.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/patricksign/agentclaw/internal/agent"
@@ -25,32 +26,54 @@ type Server struct {
 	scratchpad  *state.Scratchpad      // may be nil
 	summarizer  *summarizer.Summarizer // may be nil — set via SetSummarizer
 	rateLimiter *rateLimiter
+	ctx         context.Context    // server-scoped context — cancelled on Shutdown
+	cancel      context.CancelFunc // cancels ctx
 }
 
 func NewServer(
 	pool *agent.Pool,
 	q *queue.Queue,
+	exec *agent.Executor,
 	mem *memory.Store,
 	bus *agent.EventBus,
 	trelloClient *trello.Client,
 	telegramToken string,
 	telegramChatID string,
 ) *Server {
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		pool:        pool,
 		queue:       q,
 		mem:         mem,
 		bus:         bus,
 		hub:         newWsHub(),
-		triggerSvc:  pipeline.NewService(trelloClient),
+		triggerSvc:  pipeline.NewService(trelloClient, exec, q, bus),
 		resolved:    mem.Resolved(),   // may be nil — endpoints handle nil gracefully
 		scratchpad:  mem.Scratchpad(), // may be nil
 		rateLimiter: newRateLimiter(),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 	// Forward EventBus → WebSocket clients
 	go s.forwardEvents()
 	go s.hub.run()
 	return s
+}
+
+// Shutdown stops the WebSocket hub and its event-forwarding goroutine.
+// Call this after the HTTP server has stopped accepting new connections.
+// Shutdown stops background pipelines and the WebSocket hub.
+// Call this after the HTTP server has stopped accepting new connections.
+func (s *Server) Shutdown() {
+	s.cancel() // cancel all in-flight pipeline goroutines
+	s.hub.shutdown()
+	s.rateLimiter.Stop()
+}
+
+// Context returns the server-scoped context that is cancelled on Shutdown.
+// Use this for background work that should stop when the server stops.
+func (s *Server) Context() context.Context {
+	return s.ctx
 }
 
 func (s *Server) Handler() http.Handler {
@@ -64,6 +87,9 @@ func (s *Server) Handler() http.Handler {
 	s.HandlerScratchpad(mux)
 	s.HandlerTrigger(mux)
 	s.HandlerState(mux)
+	s.HandlerMetric(mux)
+	s.HandlerPricing(mux)
+	s.HandlerHealth(mux)
 
 	// Static — serve dashboard frontend
 	mux.Handle("/", http.FileServer(http.Dir("./static")))

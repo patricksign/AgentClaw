@@ -33,8 +33,10 @@ type bucket struct {
 }
 
 // rateLimiter tracks per-IP buckets and periodically purges idle ones.
+// Uses RWMutex: allow() acquires read-lock for existing IPs (hot path),
+// write-lock only when creating a new bucket (cold path).
 type rateLimiter struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	buckets  map[string]*bucket
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -50,14 +52,22 @@ func newRateLimiter() *rateLimiter {
 }
 
 // allow returns true if the request from ip is within the rate limit.
+// Hot path uses RLock for existing IPs; only promotes to Lock for new IPs.
 func (rl *rateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
+	rl.mu.RLock()
 	b, ok := rl.buckets[ip]
+	rl.mu.RUnlock()
+
 	if !ok {
-		b = &bucket{tokens: rateLimitMax, lastSeen: time.Now()}
-		rl.buckets[ip] = b
+		rl.mu.Lock()
+		// Double-check after acquiring write lock.
+		b, ok = rl.buckets[ip]
+		if !ok {
+			b = &bucket{tokens: rateLimitMax, lastSeen: time.Now()}
+			rl.buckets[ip] = b
+		}
+		rl.mu.Unlock()
 	}
-	rl.mu.Unlock()
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -97,13 +107,13 @@ func (rl *rateLimiter) cleanup() {
 		case <-rl.stop:
 			return
 		case <-ticker.C:
-			// Collect a snapshot of all IP→bucket pairs under the global lock.
-			rl.mu.Lock()
+			// Collect a snapshot under read lock — does not block concurrent allow() calls.
+			rl.mu.RLock()
 			snapshot := make(map[string]*bucket, len(rl.buckets))
 			for ip, b := range rl.buckets {
 				snapshot[ip] = b
 			}
-			rl.mu.Unlock()
+			rl.mu.RUnlock()
 
 			// Determine idle IPs without holding the global lock.
 			var idle []string

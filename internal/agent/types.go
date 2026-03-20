@@ -9,6 +9,28 @@ import (
 	"github.com/patricksign/agentclaw/internal/state"
 )
 
+// ─── Execution Phase ──────────────────────────────────────────────────────────
+
+type ExecutionPhase string
+
+const (
+	PhaseUnderstand ExecutionPhase = "understand"
+	PhaseClarify    ExecutionPhase = "clarify"
+	PhasePlan       ExecutionPhase = "plan"
+	PhaseImplement  ExecutionPhase = "implement"
+	PhaseDone       ExecutionPhase = "done"
+)
+
+// Question is a clarification question raised during phaseUnderstand.
+type Question struct {
+	ID         string    `json:"id"`
+	Text       string    `json:"text"`
+	Answer     string    `json:"answer"`
+	AnsweredBy string    `json:"answered_by"` // "sonnet" | "opus" | "human" | "cache"
+	Resolved   bool      `json:"resolved"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // ─── Agent ───────────────────────────────────────────────────────────────────
 
 type Status string
@@ -30,6 +52,7 @@ type Config struct {
 	TimeoutSecs int               `json:"timeout_secs"`
 	Tags        []string          `json:"tags"`
 	Env         map[string]string `json:"env"`
+	EnvKeys     []string          `json:"env_keys,omitempty"` // OS env var names to inject into Env at spawn time
 }
 
 // Agent is the interface every agent must implement.
@@ -86,6 +109,17 @@ type Task struct {
 	CreatedAt    time.Time         `json:"created_at"`
 	StartedAt    *time.Time        `json:"started_at,omitempty"`
 	FinishedAt   *time.Time        `json:"finished_at,omitempty"`
+
+	// Pre-execution protocol fields
+	Phase          ExecutionPhase `json:"phase"`
+	Understanding  string         `json:"understanding"`
+	Assumptions    []string       `json:"assumptions"`
+	Risks          []string       `json:"risks"`
+	Questions      []Question     `json:"questions"`
+	ImplementPlan  string         `json:"implement_plan"`
+	PlanApprovedBy string         `json:"plan_approved_by"`
+	RedirectCount  int            `json:"redirect_count"`
+	PhaseStartedAt time.Time      `json:"phase_started_at"`
 }
 
 // Lock/Unlock expose the embedded mutex for callers that need
@@ -95,48 +129,66 @@ func (t *Task) Unlock() { t.mu.Unlock() }
 
 // taskJSON is an alias used for JSON marshaling to avoid infinite recursion.
 type taskJSON struct {
-	ID           string            `json:"id"`
-	Title        string            `json:"title"`
-	Description  string            `json:"description"`
-	AgentRole    string            `json:"agent_role"`
-	AssignedTo   string            `json:"assigned_to"`
-	Complexity   string            `json:"complexity"`
-	Status       TaskStatus        `json:"status"`
-	Priority     Priority          `json:"priority"`
-	DependsOn    []string          `json:"depends_on"`
-	Tags         []string          `json:"tags"`
-	InputTokens  int64             `json:"input_tokens"`
-	OutputTokens int64             `json:"output_tokens"`
-	CostUSD      float64           `json:"cost_usd"`
-	Retries      int               `json:"retries"`
-	Meta         map[string]string `json:"meta"`
-	CreatedAt    time.Time         `json:"created_at"`
-	StartedAt    *time.Time        `json:"started_at,omitempty"`
-	FinishedAt   *time.Time        `json:"finished_at,omitempty"`
+	ID             string            `json:"id"`
+	Title          string            `json:"title"`
+	Description    string            `json:"description"`
+	AgentRole      string            `json:"agent_role"`
+	AssignedTo     string            `json:"assigned_to"`
+	Complexity     string            `json:"complexity"`
+	Status         TaskStatus        `json:"status"`
+	Priority       Priority          `json:"priority"`
+	DependsOn      []string          `json:"depends_on"`
+	Tags           []string          `json:"tags"`
+	InputTokens    int64             `json:"input_tokens"`
+	OutputTokens   int64             `json:"output_tokens"`
+	CostUSD        float64           `json:"cost_usd"`
+	Retries        int               `json:"retries"`
+	Meta           map[string]string `json:"meta"`
+	CreatedAt      time.Time         `json:"created_at"`
+	StartedAt      *time.Time        `json:"started_at,omitempty"`
+	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
+	Phase          ExecutionPhase    `json:"phase"`
+	Understanding  string            `json:"understanding"`
+	Assumptions    []string          `json:"assumptions"`
+	Risks          []string          `json:"risks"`
+	Questions      []Question        `json:"questions"`
+	ImplementPlan  string            `json:"implement_plan"`
+	PlanApprovedBy string            `json:"plan_approved_by"`
+	RedirectCount  int               `json:"redirect_count"`
+	PhaseStartedAt time.Time         `json:"phase_started_at"`
 }
 
 // MarshalJSON serializes a Task safely under its own lock.
 func (t *Task) MarshalJSON() ([]byte, error) {
 	t.mu.Lock()
 	snapshot := taskJSON{
-		ID:           t.ID,
-		Title:        t.Title,
-		Description:  t.Description,
-		AgentRole:    t.AgentRole,
-		AssignedTo:   t.AssignedTo,
-		Complexity:   t.Complexity,
-		Status:       t.Status,
-		Priority:     t.Priority,
-		DependsOn:    t.DependsOn,
-		Tags:         t.Tags,
-		InputTokens:  t.InputTokens,
-		OutputTokens: t.OutputTokens,
-		CostUSD:      t.CostUSD,
-		Retries:      t.Retries,
-		Meta:         t.Meta,
-		CreatedAt:    t.CreatedAt,
-		StartedAt:    t.StartedAt,
-		FinishedAt:   t.FinishedAt,
+		ID:             t.ID,
+		Title:          t.Title,
+		Description:    t.Description,
+		AgentRole:      t.AgentRole,
+		AssignedTo:     t.AssignedTo,
+		Complexity:     t.Complexity,
+		Status:         t.Status,
+		Priority:       t.Priority,
+		DependsOn:      t.DependsOn,
+		Tags:           t.Tags,
+		InputTokens:    t.InputTokens,
+		OutputTokens:   t.OutputTokens,
+		CostUSD:        t.CostUSD,
+		Retries:        t.Retries,
+		Meta:           t.Meta,
+		CreatedAt:      t.CreatedAt,
+		StartedAt:      t.StartedAt,
+		FinishedAt:     t.FinishedAt,
+		Phase:          t.Phase,
+		Understanding:  t.Understanding,
+		Assumptions:    t.Assumptions,
+		Risks:          t.Risks,
+		Questions:      t.Questions,
+		ImplementPlan:  t.ImplementPlan,
+		PlanApprovedBy: t.PlanApprovedBy,
+		RedirectCount:  t.RedirectCount,
+		PhaseStartedAt: t.PhaseStartedAt,
 	}
 	t.mu.Unlock()
 	return json.Marshal(snapshot)
@@ -184,6 +236,8 @@ type MemoryContext struct {
 	AllScopes    []*state.ScopeManifest // all agent scopes for cross-agent awareness (tier 3 only)
 	AgentDoc     string                // role-specific memory from memory/agents/<role>.md
 	Scratchpad   *state.Scratchpad     // shared team scratchpad; may be nil
+	SkillContext string                // learned skills from previous tasks (Markdown)
+	SkillStore   *state.SkillStore     // reference for post-task skill updates; may be nil
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
