@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // Compile-time check: StateStore implements port.StateStore.

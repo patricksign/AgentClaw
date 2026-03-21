@@ -23,13 +23,13 @@ const (
 // Uses atomic state for the fast path (circuitClosed) to avoid mutex
 // contention when all providers are healthy.
 type breaker struct {
-	mu          sync.Mutex
-	state       circuitState
-	failures    int
-	threshold   int
-	cooldown    time.Duration
-	openedAt    time.Time
-	lastErr     error
+	mu        sync.Mutex
+	state     circuitState
+	failures  int
+	threshold int
+	cooldown  time.Duration
+	openedAt  time.Time
+	lastErr   error
 }
 
 func newBreaker(threshold int, cooldown time.Duration) *breaker {

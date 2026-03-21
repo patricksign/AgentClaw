@@ -1,12 +1,12 @@
 [
-  {"id": "idea-agent-01",   "name": "Idea Agent",   "role": "idea",      "model": "opus",      "max_retries": 3, "timeout_secs": 120,  "env_keys": ["ANTHROPIC_API_KEY"]},
-  {"id": "architect-01",    "name": "Architect",     "role": "architect",  "model": "opus",      "max_retries": 3, "timeout_secs": 180,  "env_keys": ["ANTHROPIC_API_KEY"]},
-  {"id": "breakdown-01",    "name": "Breakdown",     "role": "breakdown",  "model": "sonnet",    "max_retries": 3, "timeout_secs": 120,  "env_keys": ["ANTHROPIC_API_KEY"]},
-  {"id": "coding-agent-01", "name": "Coder A",       "role": "coding",     "model": "minimax",   "max_retries": 3, "timeout_secs": 600,  "env_keys": ["MINIMAX_API_KEY"]},
-  {"id": "coding-agent-02", "name": "Coder B",       "role": "coding",     "model": "minimax",   "max_retries": 3, "timeout_secs": 600,  "env_keys": ["MINIMAX_API_KEY"]},
-  {"id": "test-agent-01",   "name": "Tester",        "role": "test",       "model": "glm5",      "max_retries": 3, "timeout_secs": 300,  "env_keys": ["GLM_API_KEY"]},
-  {"id": "review-agent-01", "name": "Reviewer",      "role": "review",     "model": "opus",      "max_retries": 3, "timeout_secs": 300,  "env_keys": ["ANTHROPIC_API_KEY"]},
-  {"id": "docs-agent-01",   "name": "Docs Writer",   "role": "docs",       "model": "glm-flash", "max_retries": 3, "timeout_secs": 120,  "env_keys": ["GLM_API_KEY"]},
-  {"id": "deploy-agent-01", "name": "Deployer",      "role": "deploy",     "model": "glm-flash", "max_retries": 3, "timeout_secs": 180,  "env_keys": ["GLM_API_KEY"]},
-  {"id": "notify-agent-01", "name": "Notifier",      "role": "notify",     "model": "glm-flash", "max_retries": 3, "timeout_secs": 30,   "env_keys": ["GLM_API_KEY"]}
+  {"id": "idea-agent-01",   "name": "Idea Agent",   "role": "idea",      "model": "opus",    "max_retries": 3, "timeout_secs": 120,  "env_keys": ["ANTHROPIC_API_KEY"]},
+  {"id": "architect-01",    "name": "Architect",     "role": "architect", "model": "opus",    "max_retries": 3, "timeout_secs": 180,  "env_keys": ["ANTHROPIC_API_KEY"]},
+  {"id": "breakdown-01",    "name": "Breakdown",     "role": "breakdown", "model": "opus",    "max_retries": 3, "timeout_secs": 120,  "env_keys": ["ANTHROPIC_API_KEY"]},
+  {"id": "coding-agent-01", "name": "Coder A",       "role": "coding",    "model": "minimax", "max_retries": 3, "timeout_secs": 600,  "env_keys": ["MINIMAX_API_KEY", "KIMI_API_KEY", "GLM_API_KEY"]},
+  {"id": "coding-agent-02", "name": "Coder B",       "role": "coding",    "model": "minimax", "max_retries": 3, "timeout_secs": 600,  "env_keys": ["MINIMAX_API_KEY", "KIMI_API_KEY", "GLM_API_KEY"]},
+  {"id": "test-agent-01",   "name": "Tester",        "role": "test",      "model": "sonnet",  "max_retries": 3, "timeout_secs": 300,  "env_keys": ["ANTHROPIC_API_KEY"]},
+  {"id": "review-agent-01", "name": "Reviewer",      "role": "review",    "model": "sonnet",  "max_retries": 3, "timeout_secs": 300,  "env_keys": ["ANTHROPIC_API_KEY"]},
+  {"id": "docs-agent-01",   "name": "Docs Writer",   "role": "docs",      "model": "minimax", "max_retries": 3, "timeout_secs": 120,  "env_keys": ["MINIMAX_API_KEY", "KIMI_API_KEY", "GLM_API_KEY"]},
+  {"id": "deploy-agent-01", "name": "Deployer",      "role": "deploy",    "model": "glm-flash", "max_retries": 3, "timeout_secs": 180, "env_keys": ["GLM_API_KEY"]},
+  {"id": "notify-agent-01", "name": "Notifier",      "role": "notify",    "model": "glm-flash", "max_retries": 3, "timeout_secs": 30,  "env_keys": ["GLM_API_KEY"]}
 ]

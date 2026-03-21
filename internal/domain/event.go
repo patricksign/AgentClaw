@@ -28,8 +28,10 @@ const (
 	EventPlanApproved     EventType = "plan.approved"
 	EventPlanRedirected   EventType = "plan.redirected"
 	EventPlanFailed       EventType = "plan.failed"
-	EventParallelStarted  EventType = "parallel.started"
-	EventParallelDone     EventType = "parallel.done"
+	EventParallelStarted    EventType = "parallel.started"
+	EventParallelDone       EventType = "parallel.done"
+	EventFallbackTriggered  EventType = "fallback.triggered"
+	EventFallbackExhausted  EventType = "fallback.exhausted"
 )
 
 // Event represents something that happened in the system.

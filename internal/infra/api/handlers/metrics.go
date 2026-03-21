@@ -3,7 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // MetricsHandlers provides HTTP endpoints for metrics and pricing.

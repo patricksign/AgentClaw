@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
-	"github.com/patricksign/agentclaw/internal/usecase/phase"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/usecase/phase"
 )
 
 // OrchestratorRouter selects the appropriate orchestration pattern for a task.

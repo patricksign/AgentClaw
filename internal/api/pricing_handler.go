@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/patricksign/agentclaw/internal/llm"
+	"github.com/patricksign/AgentClaw/internal/llm"
 )
 
 func (s *Server) HandlerPricing(mux *http.ServeMux) {

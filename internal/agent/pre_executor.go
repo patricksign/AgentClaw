@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/patricksign/agentclaw/internal/integrations/telegram"
-	"github.com/patricksign/agentclaw/internal/llm"
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/integrations/telegram"
+	"github.com/patricksign/AgentClaw/internal/llm"
+	"github.com/patricksign/AgentClaw/internal/state"
 	"github.com/rs/zerolog/log"
 )
 
@@ -115,15 +116,9 @@ func (a *BaseAgent) phaseUnderstand(ctx context.Context, task *Task, mem MemoryC
 	log.Info().Str("agent", a.cfg.ID).Str("task", taskID).Msg("phase: understand — start")
 
 	system := `You are a senior engineer. Before writing any code, you must fully understand the task.
-Analyze the task and return ONLY valid JSON, no markdown fences:
-{
-  "understanding": "restate the task in your own words",
-  "assumptions": ["assumption 1", "assumption 2"],
-  "risks": ["risk 1", "risk 2"],
-  "questions": ["question if unclear"]
-}
-Return questions as empty array [] if everything is clear.
-Be specific. Do not be vague.`
+Analyze the task and return ONLY compact JSON (no whitespace, no markdown fences):
+{"understanding":"...","assumptions":["..."],"risks":["..."],"questions":["..."]}
+Return questions as empty array [] if everything is clear. Be specific.`
 
 	projectCtx := mem.ProjectDoc
 	if len(projectCtx) > 800 {
@@ -437,14 +432,8 @@ func (a *BaseAgent) phasePlan(ctx context.Context, task *Task, mem MemoryContext
 
 	// ── Step A: Agent writes implementation plan ───────────────────────────
 	planSystem := `You are a senior engineer. Write a detailed implementation plan.
-Do NOT write any code yet. Return ONLY valid JSON:
-{
-  "plan": "step by step what you will do",
-  "files_to_change": ["path/to/file.go"],
-  "approach": "why you chose this approach",
-  "edge_cases": ["edge case 1"],
-  "test_cases": ["test case 1"]
-}`
+Do NOT write any code yet. Return ONLY compact JSON (no whitespace, no markdown fences):
+{"plan":"...","files_to_change":["path/to/file.go"]}`
 
 	// Format resolved Q&A pairs.
 	var qaLines []string
@@ -502,16 +491,17 @@ Be concise.`
 	tCtx2, cancel2 := context.WithTimeout(ctx, planTimeout)
 	defer cancel2()
 
-	opusResp, err := a.callModel(tCtx2, "opus", opusSystem, opusUser, 1024)
+	supervisorModel := domain.SupervisorModel(a.cfg.Model)
+	opusResp, err := a.callModel(tCtx2, supervisorModel, opusSystem, opusUser, 1024)
 	if err != nil {
-		return false, fmt.Errorf("phasePlan: opus review call: %w", err)
+		return false, fmt.Errorf("phasePlan: %s review call: %w", supervisorModel, err)
 	}
 
 	opusResp = strings.TrimSpace(opusResp)
 
 	if strings.HasPrefix(opusResp, "APPROVED") {
 		task.Lock()
-		task.PlanApprovedBy = "opus"
+		task.PlanApprovedBy = supervisorModel
 		task.Phase = PhaseImplement
 		task.Unlock()
 		a.saveTask(task)
@@ -577,9 +567,6 @@ Be concise.`
 type planResult struct {
 	Plan          string   `json:"plan"`
 	FilesToChange []string `json:"files_to_change"`
-	Approach      string   `json:"approach"`
-	EdgeCases     []string `json:"edge_cases"`
-	TestCases     []string `json:"test_cases"`
 }
 
 func parsePlanJSON(content string) (*planResult, error) {
@@ -594,33 +581,15 @@ func parsePlanJSON(content string) (*planResult, error) {
 // ─── Escalation chain helpers ─────────────────────────────────────────────────
 
 // escalationLevel returns the first escalation level for this agent's model.
-//
-//	GLM/MiniMax → sonnet
-//	sonnet       → opus
-//	opus         → human (handled in phaseClarify directly)
+// Uses domain.EscalationTarget for centralized model hierarchy.
 func (a *BaseAgent) escalationLevel() string {
-	switch a.cfg.Model {
-	case "glm5", "glm-flash", "minimax", "minimax-highspeed":
-		return "sonnet"
-	case "sonnet":
-		return "opus"
-	case "opus":
-		return "human"
-	default:
-		return "sonnet"
-	}
+	return domain.EscalationTarget(a.cfg.Model)
 }
 
 // nextEscalationLevel returns the next level in the chain.
+// Uses domain.NextEscalationLevel for centralized model hierarchy.
 func nextEscalationLevel(level string) string {
-	switch level {
-	case "sonnet":
-		return "opus"
-	case "opus":
-		return "human"
-	default:
-		return "human"
-	}
+	return domain.NextEscalationLevel(level)
 }
 
 // tryAnswerAt attempts to answer a question using the given model (30s timeout).
@@ -671,14 +640,12 @@ func (a *BaseAgent) callModel(ctx context.Context, model, system, userMsg string
 		MaxTokens: maxTokens,
 	}
 
-	// Enable prompt caching for Anthropic models. System prompts in
-	// phaseUnderstand, phaseClarify, and phasePlan are stable text templates
-	// that benefit from caching (90% cost reduction on cache hits).
-	switch model {
-	case "opus", "sonnet", "haiku":
+	// Enable prompt caching for Anthropic models. Phase system prompts are
+	// stable text templates that benefit from 1h caching (90% cost reduction).
+	if domain.SupportsPromptCache(model) {
 		req.CacheControl = &llm.CacheControl{
 			CacheSystem: true,
-			TTL:         "ephemeral",
+			TTL:         domain.CacheTTLForContent("system"),
 		}
 	}
 

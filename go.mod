@@ -1,4 +1,4 @@
-module github.com/patricksign/agentclaw
+module github.com/patricksign/AgentClaw
 
 go 1.26
 

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // ClarifyPhase resolves unresolved questions via the escalation chain.
@@ -20,6 +20,14 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 		if q.Resolved {
 			continue
 		}
+
+		// Save checkpoint before each escalation attempt — captures which
+		// question we're on so resume skips already-resolved ones.
+		saveCheckpoint(pctx, task.ID, domain.PhaseClarify, i, "escalate_question", map[string]string{
+			"question_id":   q.ID,
+			"question_text": q.Text,
+			"understanding": task.Understanding,
+		})
 
 		result, err := pctx.Escalator.Resolve(ctx, port.EscalatorRequest{
 			Question:    q.Text,

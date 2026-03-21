@@ -9,9 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/integrations/trello"
-	"github.com/patricksign/agentclaw/internal/llm"
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/integrations/trello"
+	"github.com/patricksign/AgentClaw/internal/llm"
+	"github.com/patricksign/AgentClaw/internal/state"
 	"github.com/rs/zerolog/log"
 )
 
@@ -83,7 +84,8 @@ func (a *BaseAgent) setStatus(s Status) {
 }
 
 // Run executes a task through the pre-execution protocol:
-//   PhaseUnderstand → PhaseClarify (optional) → PhasePlan → PhaseImplement
+//
+//	PhaseUnderstand → PhaseClarify (optional) → PhasePlan → PhaseImplement
 //
 // Returns (nil, nil) when the task is suspended (waiting for human input) —
 // the task will be re-dispatched once the answer arrives via ResumeTask.
@@ -181,12 +183,12 @@ func (a *BaseAgent) phaseImplement(ctx context.Context, task *Task, mem MemoryCo
 	}
 
 	// Enable prompt caching for system prompts (stable across tasks for same role).
-	// This uses Anthropic's cache_control feature to cache the system prompt
-	// which contains role identity, project context, and skills — saving ~90% on input.
-	if a.cfg.Model == "opus" || a.cfg.Model == "sonnet" || a.cfg.Model == "haiku" {
+	// System prompts contain role identity + project context — stable content
+	// that benefits from 1h TTL (saves ~90% on input tokens for cache hits).
+	if domain.SupportsPromptCache(a.cfg.Model) {
 		req.CacheControl = &llm.CacheControl{
 			CacheSystem: true,
-			TTL:         "ephemeral",
+			TTL:         domain.CacheTTLForContent("system"),
 		}
 	}
 
@@ -194,7 +196,7 @@ func (a *BaseAgent) phaseImplement(ctx context.Context, task *Task, mem MemoryCo
 	if err != nil {
 		a.setStatus(StatusFailed)
 		if d != nil && d.Telegram != nil {
-			d.Telegram.NotifyImplementFailed(ctx, a.cfg.ID, taskID, taskTitle, err.Error())
+			go d.Telegram.NotifyImplementFailed(ctx, a.cfg.ID, taskID, taskTitle, err.Error())
 		}
 		return nil, fmt.Errorf("agent %s llm call failed: %w", a.cfg.ID, err)
 	}
@@ -266,14 +268,9 @@ func (a *BaseAgent) reflectAndLearn(ctx context.Context, task *Task, mem MemoryC
 	}
 
 	reflectSystem := `You are a learning agent. After completing a task, reflect on what went well and what didn't.
-Return ONLY valid JSON:
-{
-  "lessons_learned": ["lesson 1"],
-  "new_patterns": ["pattern that worked well"],
-  "anti_patterns": ["pattern to avoid next time"],
-  "skills_used": []
-}
-Be specific and concise. Max 3 items per array.`
+Return ONLY compact JSON (no whitespace, no markdown fences):
+{"lessons_learned":["..."],"new_patterns":["..."],"anti_patterns":["..."],"skills_used":[]}
+Be specific. Max 3 items per array.`
 
 	// Wrap output preview in data fences to prevent prompt injection chain:
 	// task output → reflection → skill → future system prompts.

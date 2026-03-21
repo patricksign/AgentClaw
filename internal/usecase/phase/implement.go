@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // ImplementPhase executes the approved plan by calling the agent's LLM.
@@ -37,13 +37,20 @@ func (p *ImplementPhase) Run(ctx context.Context, pctx PhaseContext) domain.Phas
 	start := time.Now()
 
 	// 3. Call LLM — use full context timeout (no additional override).
-	resp, err := pctx.Router.Call(ctx, port.LLMRequest{
+	implReq := port.LLMRequest{
 		Model:     pctx.AgentCfg.Model,
 		System:    systemPrompt,
 		Messages:  []port.LLMMessage{{Role: "user", Content: userMsg}},
 		MaxTokens: 8192,
 		TaskID:    task.ID,
-	})
+	}
+	if domain.SupportsPromptCache(pctx.AgentCfg.Model) {
+		implReq.CacheControl = &port.LLMCacheControl{
+			CacheSystem: true,
+			TTL:         domain.CacheTTLForContent("system"),
+		}
+	}
+	resp, err := pctx.Router.Call(ctx, implReq)
 	if err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("implement: LLM call: %w", err)}
 	}

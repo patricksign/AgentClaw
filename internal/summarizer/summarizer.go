@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/llm"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/llm"
 	"github.com/rs/zerolog/log"
 )
 

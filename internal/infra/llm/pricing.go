@@ -1,7 +1,7 @@
 package llm
 
 import (
-	llmcore "github.com/patricksign/agentclaw/internal/llm"
+	llmcore "github.com/patricksign/AgentClaw/internal/llm"
 )
 
 // CostUSD calculates the cost in USD for the given model and token counts.

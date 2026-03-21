@@ -13,23 +13,24 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/api"
-	infraintegrations "github.com/patricksign/agentclaw/internal/infra/integrations"
-	infrallm "github.com/patricksign/agentclaw/internal/infra/llm"
-	inframemory "github.com/patricksign/agentclaw/internal/infra/memory"
-	infranotification "github.com/patricksign/agentclaw/internal/infra/notification"
-	infrastate "github.com/patricksign/agentclaw/internal/infra/state"
-	"github.com/patricksign/agentclaw/internal/integrations/telegram"
-	"github.com/patricksign/agentclaw/internal/integrations/trello"
-	"github.com/patricksign/agentclaw/internal/llm"
-	"github.com/patricksign/agentclaw/internal/memory"
-	"github.com/patricksign/agentclaw/internal/queue"
-	"github.com/patricksign/agentclaw/internal/state"
-	"github.com/patricksign/agentclaw/internal/summarizer"
-	"github.com/patricksign/agentclaw/internal/usecase/escalation"
-	"github.com/patricksign/agentclaw/internal/usecase/orchestrator"
-	"github.com/patricksign/agentclaw/internal/usecase/phase"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/api"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	infraintegrations "github.com/patricksign/AgentClaw/internal/infra/integrations"
+	infrallm "github.com/patricksign/AgentClaw/internal/infra/llm"
+	inframemory "github.com/patricksign/AgentClaw/internal/infra/memory"
+	infranotification "github.com/patricksign/AgentClaw/internal/infra/notification"
+	infrastate "github.com/patricksign/AgentClaw/internal/infra/state"
+	"github.com/patricksign/AgentClaw/internal/integrations/telegram"
+	"github.com/patricksign/AgentClaw/internal/integrations/trello"
+	"github.com/patricksign/AgentClaw/internal/llm"
+	"github.com/patricksign/AgentClaw/internal/memory"
+	"github.com/patricksign/AgentClaw/internal/queue"
+	"github.com/patricksign/AgentClaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/summarizer"
+	"github.com/patricksign/AgentClaw/internal/usecase/escalation"
+	"github.com/patricksign/AgentClaw/internal/usecase/orchestrator"
+	"github.com/patricksign/AgentClaw/internal/usecase/phase"
 )
 
 const maxTaskRetries = 3
@@ -40,7 +41,7 @@ func main() {
 
 	// ── Config ─────────────────────────────────────────────────────────────
 	addr := getenv("ADDR", ":8080")
-	dbPath := getenv("DB_PATH", "./agentclaw.db")
+	dbPath := getenv("DB_PATH", "./AgentClaw.db")
 	projectPath := getenv("PROJECT_PATH", "./memory/project.md")
 	statePath := getenv("STATE_PATH", "./state")
 	pricingPath := getenv("PRICING_PATH", "./pricing/agent-pricing.json")
@@ -77,6 +78,10 @@ func main() {
 	}()
 	log.Info().Str("db", dbPath).Msg("memory store ready")
 
+	// SQLite-backed checkpoint store (atomic, queryable, co-located with tasks).
+	checkpointStore := inframemory.NewSQLiteCheckpointStore(coreMem)
+	log.Info().Msg("checkpoint store ready (SQLite)")
+
 	// Infra memory adapter (satisfies port.MemoryStore).
 	// TODO: wire into use case layer once agent migration is complete.
 	_ = inframemory.NewStore(coreMem)
@@ -99,6 +104,33 @@ func main() {
 	// Infra notifier (satisfies port.Notifier)
 	notifier := infranotification.NewTelegramDispatcher(dualTG)
 
+	// Wire fallback notifications: llm.Router → Telegram via goroutine.
+	coreLLMRouter.SetFallbackNotifier(func(evt llm.FallbackEvent) {
+		var evtType domain.EventType
+		ch := domain.StatusChannel
+		msg := fmt.Sprintf("%s → %s", evt.FromModel, evt.ToModel)
+		if evt.Exhausted {
+			evtType = domain.EventFallbackExhausted
+			ch = domain.HumanChannel
+			msg = fmt.Sprintf("All models failed. Last error: %s", evt.Err)
+		} else {
+			evtType = domain.EventFallbackTriggered
+		}
+		go func() {
+			_ = notifier.Dispatch(context.Background(), domain.Event{
+				Type:    evtType,
+				Channel: ch,
+				TaskID:  evt.TaskID,
+				Payload: map[string]string{
+					"message":    msg,
+					"from_model": evt.FromModel,
+					"to_model":   evt.ToModel,
+				},
+				OccurredAt: time.Now(),
+			})
+		}()
+	})
+
 	// Reply store + adapter (satisfies escalation.HumanAsker)
 	replyStore := agent.NewReplyStore()
 	replyAdapter := infraintegrations.NewReplyAdapter(replyStore, dualTG)
@@ -112,7 +144,7 @@ func main() {
 		escalCache = escalation.NewCache(nil)
 	}
 
-	escalChain := escalation.NewChain(llmRouter, notifier, escalCache, replyAdapter)
+	escalChain := escalation.NewChain(llmRouter, notifier, escalCache, replyAdapter, checkpointStore)
 
 	// ── Layer 2: Use Cases — Phase Runner ──────────────────────────────────
 	phaseRunner := phase.NewRunner()
@@ -368,18 +400,27 @@ func spawnAgentsFromConfig(pool *agent.Pool, configPath string) {
 
 func defaultAgentConfigs() []agent.Config {
 	anthropicEnv := map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")}
-	minimaxEnv := map[string]string{"MINIMAX_API_KEY": os.Getenv("MINIMAX_API_KEY")}
+	workerEnv := map[string]string{
+		"MINIMAX_API_KEY": os.Getenv("MINIMAX_API_KEY"),
+		"KIMI_API_KEY":    os.Getenv("KIMI_API_KEY"),
+		"GLM_API_KEY":     os.Getenv("GLM_API_KEY"),
+	}
 	glmEnv := map[string]string{"GLM_API_KEY": os.Getenv("GLM_API_KEY")}
 
 	return []agent.Config{
+		// Orchestration — Opus
 		{ID: "idea-agent-01", Name: "Idea Agent", Role: "idea", Model: "opus", MaxRetries: maxTaskRetries, TimeoutSecs: 120, Env: anthropicEnv},
 		{ID: "architect-01", Name: "Architect", Role: "architect", Model: "opus", MaxRetries: maxTaskRetries, TimeoutSecs: 180, Env: anthropicEnv},
-		{ID: "breakdown-01", Name: "Breakdown", Role: "breakdown", Model: "sonnet", MaxRetries: maxTaskRetries, TimeoutSecs: 120, Env: anthropicEnv},
-		{ID: "coding-agent-01", Name: "Coder A", Role: "coding", Model: "minimax", MaxRetries: maxTaskRetries, TimeoutSecs: 600, Env: minimaxEnv},
-		{ID: "coding-agent-02", Name: "Coder B", Role: "coding", Model: "minimax", MaxRetries: maxTaskRetries, TimeoutSecs: 600, Env: minimaxEnv},
-		{ID: "test-agent-01", Name: "Tester", Role: "test", Model: "glm5", MaxRetries: maxTaskRetries, TimeoutSecs: 300, Env: glmEnv},
-		{ID: "review-agent-01", Name: "Reviewer", Role: "review", Model: "opus", MaxRetries: maxTaskRetries, TimeoutSecs: 300, Env: anthropicEnv},
-		{ID: "docs-agent-01", Name: "Docs Writer", Role: "docs", Model: "glm-flash", MaxRetries: maxTaskRetries, TimeoutSecs: 120, Env: glmEnv},
+		{ID: "breakdown-01", Name: "Breakdown", Role: "breakdown", Model: "opus", MaxRetries: maxTaskRetries, TimeoutSecs: 120, Env: anthropicEnv},
+		// Implementation — MiniMax (fallback: Kimi → GLM-5)
+		{ID: "coding-agent-01", Name: "Coder A", Role: "coding", Model: "minimax", MaxRetries: maxTaskRetries, TimeoutSecs: 600, Env: workerEnv},
+		{ID: "coding-agent-02", Name: "Coder B", Role: "coding", Model: "minimax", MaxRetries: maxTaskRetries, TimeoutSecs: 600, Env: workerEnv},
+		// Coordination — Sonnet (test, review)
+		{ID: "test-agent-01", Name: "Tester", Role: "test", Model: "sonnet", MaxRetries: maxTaskRetries, TimeoutSecs: 300, Env: anthropicEnv},
+		{ID: "review-agent-01", Name: "Reviewer", Role: "review", Model: "sonnet", MaxRetries: maxTaskRetries, TimeoutSecs: 300, Env: anthropicEnv},
+		// Docs — MiniMax (fallback: Kimi → GLM-5)
+		{ID: "docs-agent-01", Name: "Docs Writer", Role: "docs", Model: "minimax", MaxRetries: maxTaskRetries, TimeoutSecs: 120, Env: workerEnv},
+		// Infrastructure — GLM-flash
 		{ID: "deploy-agent-01", Name: "Deployer", Role: "deploy", Model: "glm-flash", MaxRetries: maxTaskRetries, TimeoutSecs: 180, Env: glmEnv},
 		{ID: "notify-agent-01", Name: "Notifier", Role: "notify", Model: "glm-flash", MaxRetries: maxTaskRetries, TimeoutSecs: 30, Env: glmEnv},
 	}

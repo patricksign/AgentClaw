@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
-const planSystem = `Write a detailed implementation plan. Return ONLY valid JSON:
-{"plan":"...","files_to_change":[],"approach":"...","edge_cases":[],"test_cases":[]}`
+const planSystem = `Write a detailed implementation plan. Return ONLY compact JSON (no whitespace, no markdown fences):
+{"plan":"...","files_to_change":["..."]}`
 
 const reviewSystem = `You are Opus, senior engineering supervisor. Review this plan.
 If sound: respond APPROVED
@@ -24,27 +24,50 @@ type PlanPhase struct{}
 type planOutput struct {
 	Plan          string   `json:"plan"`
 	FilesToChange []string `json:"files_to_change"`
-	Approach      string   `json:"approach"`
-	EdgeCases     []string `json:"edge_cases"`
-	TestCases     []string `json:"test_cases"`
 }
 
-func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResult {
+func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint *domain.PhaseCheckpoint) domain.PhaseResult {
 	task := pctx.Task
 
 	// ── Step A: Agent generates plan ────────────────────────────────────────
 
 	qaContext := p.buildQAContext(task)
+
+	// If checkpoint has previous plan attempt context (from a redirect),
+	// include it so the model improves on the previous attempt.
+	prevGuidance := ""
+	if checkpoint != nil && checkpoint.Phase == domain.PhasePlan {
+		if g := checkpoint.GetAccumulated("opus_guidance"); g != "" {
+			prevGuidance = g
+		}
+	}
+
 	userMsg := fmt.Sprintf("Task: %s\n\nUnderstanding: %s\n\n%s", task.Title, task.Understanding, qaContext)
+	if prevGuidance != "" {
+		userMsg += fmt.Sprintf("\n\n--- Previous plan was rejected. Opus guidance:\n%s\n\nImprove your plan based on this feedback.", prevGuidance)
+	}
+
+	// Save checkpoint before plan generation LLM call.
+	saveCheckpoint(pctx, task.ID, domain.PhasePlan, 0, "generate_plan", map[string]string{
+		"understanding": task.Understanding,
+		"qa_context":    truncate(qaContext, 1000),
+	})
 
 	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	resp, err := pctx.Router.Call(callCtx, port.LLMRequest{
+	planReq := port.LLMRequest{
 		Model:     pctx.AgentCfg.Model,
 		System:    planSystem,
 		Messages:  []port.LLMMessage{{Role: "user", Content: userMsg}},
 		MaxTokens: 4096,
 		TaskID:    task.ID,
-	})
+	}
+	if domain.SupportsPromptCache(pctx.AgentCfg.Model) {
+		planReq.CacheControl = &port.LLMCacheControl{
+			CacheSystem: true,
+			TTL:         domain.CacheTTLForContent("system"),
+		}
+	}
+	resp, err := pctx.Router.Call(callCtx, planReq)
 	cancel()
 	if err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("plan: generate: %w", err)}
@@ -65,25 +88,40 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResu
 		AgentID:   pctx.AgentCfg.ID,
 		AgentRole: pctx.AgentCfg.Role,
 		Model:     pctx.AgentCfg.Model,
-		Payload:   map[string]string{"message": "Plan submitted for Opus review"},
+		Payload:   map[string]string{"message": "Plan submitted for review"},
 	})
 
-	// ── Step B: Opus reviews plan ───────────────────────────────────────────
+	// ── Step B: Supervisor reviews plan ─────────────────────────────────────
+
+	supervisorModel := domain.SupervisorModel(pctx.AgentCfg.Model)
 
 	reviewMsg := fmt.Sprintf("Agent: %s\nTask: %s\n\nImplementation Plan:\n%s\n\nFiles to change: %s",
 		pctx.AgentCfg.ID, task.Title, plan.Plan, strings.Join(plan.FilesToChange, ", "))
 
+	// Save checkpoint before review LLM call.
+	saveCheckpoint(pctx, task.ID, domain.PhasePlan, 1, "review_plan", map[string]string{
+		"understanding": task.Understanding,
+		"plan_draft":    truncate(plan.Plan, 2000),
+	})
+
 	reviewCtx, reviewCancel := context.WithTimeout(ctx, 60*time.Second)
-	reviewResp, err := pctx.Router.Call(reviewCtx, port.LLMRequest{
-		Model:     "opus",
+	reviewReq := port.LLMRequest{
+		Model:     supervisorModel,
 		System:    reviewSystem,
 		Messages:  []port.LLMMessage{{Role: "user", Content: reviewMsg}},
 		MaxTokens: 2048,
 		TaskID:    task.ID,
-	})
+	}
+	if domain.SupportsPromptCache(supervisorModel) {
+		reviewReq.CacheControl = &port.LLMCacheControl{
+			CacheSystem: true,
+			TTL:         domain.CacheTTLForContent("system"),
+		}
+	}
+	reviewResp, err := pctx.Router.Call(reviewCtx, reviewReq)
 	reviewCancel()
 	if err != nil {
-		return domain.PhaseResult{Err: fmt.Errorf("plan: opus review: %w", err)}
+		return domain.PhaseResult{Err: fmt.Errorf("plan: %s review: %w", supervisorModel, err)}
 	}
 
 	verdict := strings.TrimSpace(reviewResp.Content)
@@ -91,10 +129,15 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResu
 	// ── APPROVED ────────────────────────────────────────────────────────────
 
 	if strings.HasPrefix(strings.ToUpper(verdict), "APPROVED") {
-		task.PlanApprovedBy = "opus"
+		task.PlanApprovedBy = supervisorModel
 		task.Phase = domain.PhaseImplement
 		if err := pctx.TaskStore.SaveTask(task); err != nil {
 			return domain.PhaseResult{Err: fmt.Errorf("plan: save approved: %w", err)}
+		}
+
+		// Clear checkpoint — plan approved.
+		if pctx.CheckpointStore != nil {
+			_ = pctx.CheckpointStore.Delete(task.ID)
 		}
 
 		dispatchEvent(ctx, pctx.Notifier, domain.Event{
@@ -126,7 +169,7 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResu
 	}
 
 	if task.RedirectCount >= 3 {
-		dispatchEvent(ctx, pctx.Notifier, domain.Event{
+		_ = dispatchCritical(ctx, pctx.Notifier, domain.Event{
 			Type:      domain.EventPlanFailed,
 			Channel:   domain.HumanChannel,
 			TaskID:    task.ID,
@@ -137,12 +180,20 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResu
 		return domain.PhaseResult{Err: fmt.Errorf("plan rejected 3 times")}
 	}
 
-	// Append guidance and restart from understand.
-	task.Description += "\n\n---\nOpus guidance:\n" + guidance
-	task.Phase = domain.PhaseUnderstand
-	task.Understanding = ""
-	task.Questions = nil
-	task.ImplementPlan = ""
+	// KEY FIX: Preserve understanding and questions — only regenerate the plan.
+	// Previously this wiped task.Understanding, task.Questions, and task.ImplementPlan,
+	// forcing a full restart from PhaseUnderstand. Now we stay in PhasePlan and
+	// save the guidance in a checkpoint so the next plan attempt improves on it.
+	task.ImplementPlan = "" // only clear the plan, not understanding
+	task.Phase = domain.PhasePlan
+
+	// Save checkpoint with Opus guidance so next iteration uses it.
+	saveCheckpoint(pctx, task.ID, domain.PhasePlan, 0, "redirect", map[string]string{
+		"understanding":  task.Understanding,
+		"opus_guidance":  guidance,
+		"redirect_count": fmt.Sprintf("%d", task.RedirectCount),
+	})
+
 	if err := pctx.TaskStore.SaveTask(task); err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("plan: save redirect: %w", err)}
 	}
@@ -164,7 +215,7 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResu
 		TaskID:    task.ID,
 		AgentID:   pctx.AgentCfg.ID,
 		AgentRole: pctx.AgentCfg.Role,
-		Payload:   map[string]string{"message": fmt.Sprintf("Plan rejected — restarting attempt %d/3", task.RedirectCount)},
+		Payload:   map[string]string{"message": fmt.Sprintf("Plan rejected — improving attempt %d/3", task.RedirectCount)},
 	})
 
 	return domain.PhaseResult{Restarted: true}

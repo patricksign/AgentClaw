@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/state"
 )
 
 func (s *Server) HandlerResolved(mux *http.ServeMux) {

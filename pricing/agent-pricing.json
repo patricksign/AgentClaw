@@ -1,5 +1,6 @@
 {
   "Anthropic": {
+    "baseUrl": "https://api.anthropic.com/v1/messages",
     "models": [
       {
         "name": "Claude Opus 4.6",
@@ -167,6 +168,7 @@
     "provider": "Anthropic"
   },
   "Z.AI (Zhipu)": {
+    "baseUrl": "https://api.z.ai/api/coding/paas/v4",
     "provider": "Z.AI (Zhipu)",
     "units": "USD per million tokens (MTok)",
     "models": [
@@ -292,6 +294,7 @@
     ]
   },
   "Minimax": {
+    "baseUrl": "https://api.minimax.io/v1/text/chatcompletion_v2",
     "provider": "MiniMax",
     "units": "USD per million tokens (MTok)",
     "models": [
@@ -341,5 +344,125 @@
         }
       }
     ]
+  },
+  "MoonshotAI": {
+    "baseUrl": "https://api.moonshot.ai/v1/chat/completions",
+    "provider": "Moonshot AI",
+    "source": "platform.moonshot.ai/docs/pricing/chat",
+    "units": "USD per million tokens (MTok)",
+    "notes": "All prices are tax-inclusive. 1M = 1,000,000 tokens.",
+    "models": [
+      {
+        "model_id": "kimi-k2.5",
+        "display_name": "Kimi K2.5",
+        "type": "multimodal",
+        "context_length": 262144,
+        "modes": ["instant", "thinking"],
+        "features": [
+          "vision",
+          "tool_calls",
+          "json_mode",
+          "partial_mode",
+          "web_search",
+          "auto_context_caching"
+        ],
+        "pricing": {
+          "input": 0.6,
+          "output": 3.0,
+          "cache_hit": 0.1,
+          "cache_miss": 0.6
+        },
+        "recommended_temperature": {
+          "instant_mode": 0.6,
+          "thinking_mode": 1.0
+        },
+        "recommended_top_p": 0.95
+      },
+      {
+        "model_id": "kimi-k2-0905-preview",
+        "display_name": "Kimi K2 (latest)",
+        "type": "text",
+        "context_length": 262144,
+        "features": [
+          "tool_calls",
+          "json_mode",
+          "partial_mode",
+          "web_search",
+          "auto_context_caching"
+        ],
+        "pricing": {
+          "input": 0.6,
+          "output": 2.5,
+          "cache_hit": 0.15
+        }
+      },
+      {
+        "model_id": "kimi-k2-turbo-preview",
+        "display_name": "Kimi K2 Turbo",
+        "type": "text",
+        "context_length": 262144,
+        "max_output_speed_tps": 100,
+        "features": [
+          "tool_calls",
+          "json_mode",
+          "partial_mode",
+          "web_search",
+          "auto_context_caching"
+        ],
+        "pricing": {
+          "input": 1.15,
+          "output": 8.0,
+          "cache_hit": 0.15
+        }
+      },
+      {
+        "model_id": "kimi-k2-thinking",
+        "display_name": "Kimi K2 Thinking",
+        "type": "thinking",
+        "context_length": 262144,
+        "features": [
+          "tool_calls",
+          "json_mode",
+          "partial_mode",
+          "web_search",
+          "auto_context_caching"
+        ],
+        "vision": false,
+        "pricing": {
+          "input": 0.6,
+          "output": 2.5,
+          "cache_hit": 0.15
+        }
+      },
+      {
+        "model_id": "kimi-k2-thinking-turbo",
+        "display_name": "Kimi K2 Thinking Turbo",
+        "type": "thinking",
+        "context_length": 262144,
+        "features": [
+          "tool_calls",
+          "json_mode",
+          "partial_mode",
+          "web_search",
+          "auto_context_caching"
+        ],
+        "vision": false,
+        "pricing": {
+          "input": 1.15,
+          "output": 8.0,
+          "cache_hit": 0.15
+        }
+      }
+    ],
+    "cache_policy": {
+      "type": "automatic",
+      "description": "Cached tokens charged at cache_hit rate. No manual configuration required.",
+      "viewable_in_console": true
+    },
+    "file_interfaces": {
+      "extraction": "free_temporary",
+      "storage": "free_temporary"
+    },
+    "compatibility": ["openai", "anthropic"]
   }
 }

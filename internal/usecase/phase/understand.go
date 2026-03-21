@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
-const understandSystem = `You are a senior engineer. Analyze the task and return ONLY valid JSON:
-{"understanding":"...","assumptions":[],"risks":[],"questions":[]}`
+const understandSystem = `You are a senior engineer. Analyze the task and return ONLY compact JSON (no whitespace, no markdown fences):
+{"understanding":"...","assumptions":["..."],"risks":["..."],"questions":["..."]}`
 
 // UnderstandPhase analyses the task and extracts understanding, assumptions,
 // risks, and clarification questions.
@@ -24,8 +24,17 @@ type understandOutput struct {
 	Questions     []string `json:"questions"`
 }
 
-func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseResult {
+func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint *domain.PhaseCheckpoint) domain.PhaseResult {
 	task := pctx.Task
+
+	// If we have a checkpoint with accumulated understanding, use it
+	// instead of re-calling the LLM. This happens when a plan redirect
+	// preserved the understanding context.
+	if checkpoint != nil && checkpoint.Phase == domain.PhaseUnderstand {
+		if prev := checkpoint.GetAccumulated("understanding"); prev != "" {
+			task.Understanding = prev
+		}
+	}
 
 	// 1. Dispatch phase transition event.
 	dispatchEvent(ctx, pctx.Notifier, domain.Event{
@@ -45,13 +54,18 @@ func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext) domain.Pha
 		truncate(pctx.Memory.AgentDoc, 400*4),
 	)
 
-	// 3. Call LLM with 60s timeout.
+	// 3. Save checkpoint before LLM call — captures state if process crashes.
+	saveCheckpoint(pctx, task.ID, domain.PhaseUnderstand, 0, "llm_call", map[string]string{
+		"user_msg": truncate(userMsg, 2000),
+	})
+
+	// 4. Call LLM with 60s timeout.
 	out, err := p.callWithRetry(ctx, pctx.Router, pctx.AgentCfg.Model, task.ID, userMsg)
 	if err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("understand: %w", err)}
 	}
 
-	// 4. Set task fields.
+	// 5. Set task fields.
 	task.Understanding = out.Understanding
 	task.Assumptions = out.Assumptions
 	task.Risks = out.Risks
@@ -70,12 +84,17 @@ func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext) domain.Pha
 		task.Phase = domain.PhasePlan
 	}
 
-	// 6. Save task.
+	// 6. Save checkpoint with accumulated understanding for potential future resume.
+	saveCheckpoint(pctx, task.ID, task.Phase, 0, "phase_transition", map[string]string{
+		"understanding": task.Understanding,
+	})
+
+	// 7. Save task.
 	if err := pctx.TaskStore.SaveTask(task); err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("understand: save task: %w", err)}
 	}
 
-	// 7. Dispatch summary event.
+	// 8. Dispatch summary event.
 	msg := fmt.Sprintf("Understood — moving to plan. Assumptions: %s", truncate(fmt.Sprint(task.Assumptions), 200))
 	if len(task.Questions) > 0 {
 		msg = fmt.Sprintf("Task paused — %d questions pending clarification", len(task.Questions))
@@ -96,13 +115,20 @@ func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext) domain.Pha
 func (p *UnderstandPhase) callWithRetry(ctx context.Context, router port.LLMRouter, model, taskID, userMsg string) (*understandOutput, error) {
 	for attempt := range 2 {
 		callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		resp, err := router.Call(callCtx, port.LLMRequest{
+		req := port.LLMRequest{
 			Model:     model,
 			System:    understandSystem,
 			Messages:  []port.LLMMessage{{Role: "user", Content: userMsg}},
 			MaxTokens: 2048,
 			TaskID:    taskID,
-		})
+		}
+		if domain.SupportsPromptCache(model) {
+			req.CacheControl = &port.LLMCacheControl{
+				CacheSystem: true,
+				TTL:         domain.CacheTTLForContent("system"),
+			}
+		}
+		resp, err := router.Call(callCtx, req)
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("LLM call: %w", err)

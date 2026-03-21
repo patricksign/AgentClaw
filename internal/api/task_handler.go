@@ -8,11 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/memory"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/memory"
 	"github.com/rs/zerolog/log"
 )
-
 
 func (s *Server) HandlerTask(mux *http.ServeMux) {
 	// Tasks

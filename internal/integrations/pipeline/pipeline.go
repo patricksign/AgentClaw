@@ -39,15 +39,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/integrations/github"
-	"github.com/patricksign/agentclaw/internal/integrations/slack"
-	"github.com/patricksign/agentclaw/internal/integrations/telegram"
-	"github.com/patricksign/agentclaw/internal/integrations/trello"
-	"github.com/patricksign/agentclaw/internal/queue"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/integrations/github"
+	"github.com/patricksign/AgentClaw/internal/integrations/slack"
+	"github.com/patricksign/AgentClaw/internal/integrations/telegram"
+	"github.com/patricksign/AgentClaw/internal/integrations/trello"
+	"github.com/patricksign/AgentClaw/internal/queue"
 	"github.com/rs/zerolog/log"
 )
-
 
 // Service orchestrates the AgentClaw agent pipeline.
 type Service struct {

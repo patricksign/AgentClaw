@@ -31,7 +31,7 @@ type PhaseResult struct {
 // EscalationResult captures the outcome of a question escalation.
 type EscalationResult struct {
 	Answer     string `json:"answer"`
-	AnsweredBy string `json:"answered_by"` // "sonnet" | "opus" | "human" | "cache"
+	AnsweredBy string `json:"answered_by"` // "haiku" | "sonnet" | "opus" | "human" | "cache"
 	Resolved   bool   `json:"resolved"`
 	NeedsHuman bool   `json:"needs_human"`
 }

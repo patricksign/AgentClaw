@@ -3,9 +3,9 @@ package integrations
 import (
 	"context"
 
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/integrations/telegram"
-	"github.com/patricksign/agentclaw/internal/usecase/escalation"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/integrations/telegram"
+	"github.com/patricksign/AgentClaw/internal/usecase/escalation"
 )
 
 // Compile-time check: ReplyAdapter implements escalation.HumanAsker.

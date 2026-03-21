@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/patricksign/agentclaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/agent"
 )
 
 func (s *Server) HandlerAgent(mux *http.ServeMux) {

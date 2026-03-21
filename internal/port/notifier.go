@@ -3,7 +3,7 @@ package port
 import (
 	"context"
 
-	"github.com/patricksign/agentclaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/domain"
 )
 
 // Notifier dispatches domain events to external channels (Telegram, Slack, etc.).

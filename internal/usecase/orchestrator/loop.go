@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
-	"github.com/patricksign/agentclaw/internal/usecase/phase"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/usecase/phase"
 )
 
 const reviewSystem = `Review this implementation output for quality, correctness,
@@ -69,7 +69,7 @@ func (l *LoopOrchestrator) Run(
 
 		reviewCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		reviewResp, err := l.router.Call(reviewCtx, port.LLMRequest{
-			Model:     "opus",
+			Model:     domain.ModelOpus,
 			System:    reviewSystem,
 			Messages:  []port.LLMMessage{{Role: "user", Content: reviewMsg}},
 			MaxTokens: 2048,
@@ -77,7 +77,7 @@ func (l *LoopOrchestrator) Run(
 		})
 		cancel()
 		if err != nil {
-			return nil, fmt.Errorf("loop attempt %d: opus review: %w", attempt, err)
+			return nil, fmt.Errorf("loop attempt %d: %s review: %w", attempt, domain.ModelOpus, err)
 		}
 
 		verdict := strings.TrimSpace(reviewResp.Content)

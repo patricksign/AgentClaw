@@ -8,10 +8,20 @@ import (
 	"sync"
 )
 
+// CostMode controls how token costs are calculated.
+type CostMode string
+
+const (
+	CostModeStandard   CostMode = ""            // default: standard input/output pricing
+	CostModeCacheWrite CostMode = "cache_write" // writing to prompt cache (5 min TTL)
+	CostModeCacheHit   CostMode = "cache_hit"   // reading from prompt cache
+	CostModeBatch      CostMode = "batch"       // batch API (50% discount, async)
+)
+
 // pricing holds per-million-token costs for a single model.
 type pricing struct {
-	InputPer1M      float64
-	OutputPer1M     float64
+	InputPer1M        float64
+	OutputPer1M       float64
 	CacheWrite5mPer1M float64 // ephemeral cache write (5 min TTL)
 	CacheWrite1hPer1M float64 // persistent cache write (1 hr TTL)
 	CacheHitPer1M     float64 // cache read hit
@@ -39,6 +49,7 @@ var aliasToJSONModel = map[string]struct {
 	"minimax":   {provider: "Minimax", model: "MiniMax-M2.5"},
 	"glm5":      {provider: "Z.AI (Zhipu)", model: "GLM-5"},
 	"glm-flash": {provider: "Z.AI (Zhipu)", model: "GLM-4.5-Flash"},
+	"kimi":      {provider: "MoonshotAI", model: "Kimi K2.5"},
 }
 
 // ─── JSON schema ─────────────────────────────────────────────────────────────
@@ -50,22 +61,22 @@ type providerBlock struct {
 }
 
 type modelEntry struct {
-	Name    string       `json:"name"`
-	Pricing modelPrices  `json:"pricing"`
+	Name    string      `json:"name"`
+	Pricing modelPrices `json:"pricing"`
 }
 
 type modelPrices struct {
-	Input         *float64 `json:"input"`
-	Output        *float64 `json:"output"`
-	CacheWrite5m  *float64 `json:"cache_write_5m"`
-	CacheWrite1h  *float64 `json:"cache_write_1h"`
-	CacheHit      *float64 `json:"cache_hit"`
-	BatchInput    *float64 `json:"batch_input"`
-	BatchOutput   *float64 `json:"batch_output"`
+	Input        *float64 `json:"input"`
+	Output       *float64 `json:"output"`
+	CacheWrite5m *float64 `json:"cache_write_5m"`
+	CacheWrite1h *float64 `json:"cache_write_1h"`
+	CacheHit     *float64 `json:"cache_hit"`
+	BatchInput   *float64 `json:"batch_input"`
+	BatchOutput  *float64 `json:"batch_output"`
 	// GLM/MiniMax variants
-	CachedInput   *float64 `json:"cached_input"`
-	CacheRead     *float64 `json:"cache_read"`
-	CacheWrite    *float64 `json:"cache_write"`
+	CachedInput *float64 `json:"cached_input"`
+	CacheRead   *float64 `json:"cache_read"`
+	CacheWrite  *float64 `json:"cache_write"`
 }
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
@@ -182,16 +193,6 @@ func CalcCost(model string, in, out int64) (float64, error) {
 	}
 	return float64(in)/1e6*p.InputPer1M + float64(out)/1e6*p.OutputPer1M, nil
 }
-
-// CostMode controls how token costs are calculated.
-type CostMode string
-
-const (
-	CostModeStandard   CostMode = ""          // default: standard input/output pricing
-	CostModeCacheWrite CostMode = "cache_write" // writing to prompt cache (5 min TTL)
-	CostModeCacheHit   CostMode = "cache_hit"   // reading from prompt cache
-	CostModeBatch      CostMode = "batch"       // batch API (50% discount, async)
-)
 
 // CalcCostAdvanced returns the estimated USD cost using the specified mode.
 // cacheTokens is the number of tokens served from cache (subset of in).

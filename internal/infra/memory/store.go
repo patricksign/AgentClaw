@@ -3,8 +3,8 @@ package memory
 import (
 	"fmt"
 
-	memcore "github.com/patricksign/agentclaw/internal/memory"
-	"github.com/patricksign/agentclaw/internal/port"
+	memcore "github.com/patricksign/AgentClaw/internal/memory"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // Compile-time check: Store implements port.MemoryStore.

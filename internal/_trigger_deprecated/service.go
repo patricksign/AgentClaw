@@ -27,9 +27,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/patricksign/agentclaw/internal/llm"
-	"github.com/patricksign/agentclaw/internal/queue"
-	"github.com/patricksign/agentclaw/internal/integrations/trello"
+	"github.com/patricksign/AgentClaw/internal/integrations/trello"
+	"github.com/patricksign/AgentClaw/internal/llm"
+	"github.com/patricksign/AgentClaw/internal/queue"
 	"github.com/rs/zerolog/log"
 )
 
@@ -356,4 +356,3 @@ func escapeMarkdown(s string) string {
 	)
 	return replacer.Replace(s)
 }
-

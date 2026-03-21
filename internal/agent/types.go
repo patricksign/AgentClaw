@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/state"
 )
 
 // ─── Execution Phase ──────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ type Question struct {
 	ID         string    `json:"id"`
 	Text       string    `json:"text"`
 	Answer     string    `json:"answer"`
-	AnsweredBy string    `json:"answered_by"` // "sonnet" | "opus" | "human" | "cache"
+	AnsweredBy string    `json:"answered_by"` // "haiku" | "sonnet" | "opus" | "human" | "cache"
 	Resolved   bool      `json:"resolved"`
 	CreatedAt  time.Time `json:"created_at"`
 }
@@ -47,7 +47,7 @@ type Config struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Role        string            `json:"role"`  // idea|architect|breakdown|coding|test|review|deploy|notify|docs
-	Model       string            `json:"model"` // opus|sonnet|minimax|glm5|glm-flash
+	Model       string            `json:"model"` // opus|sonnet|haiku|minimax|kimi|glm5|glm-flash
 	MaxRetries  int               `json:"max_retries"`
 	TimeoutSecs int               `json:"timeout_secs"`
 	Tags        []string          `json:"tags"`
@@ -94,9 +94,9 @@ type Task struct {
 	ID           string            `json:"id"`
 	Title        string            `json:"title"`
 	Description  string            `json:"description"`
-	AgentRole    string            `json:"agent_role"`   // which role should handle this
-	AssignedTo   string            `json:"assigned_to"`  // agent ID after assignment
-	Complexity   string            `json:"complexity"`   // S | M | L — controls context loading tier
+	AgentRole    string            `json:"agent_role"`  // which role should handle this
+	AssignedTo   string            `json:"assigned_to"` // agent ID after assignment
+	Complexity   string            `json:"complexity"`  // S | M | L — controls context loading tier
 	Status       TaskStatus        `json:"status"`
 	Priority     Priority          `json:"priority"`
 	DependsOn    []string          `json:"depends_on"` // task IDs that must complete first
@@ -227,17 +227,17 @@ type Artifact struct {
 // MemoryContext is injected into each agent before running a task.
 // Agents read this context so they never "forget" project state.
 type MemoryContext struct {
-	ProjectDoc   string                // content of project.md (length varies by tier)
-	RecentTasks  []*Task               // recent completed tasks for the same role
-	RelevantCode []string              // RAG results: recent task summaries + resolved error patterns
-	ADRs         []string              // Architecture Decision Records (tier 3 only)
-	Resolved     *state.ResolvedStore  // optional error pattern store for runtime lookups
-	Scope        *state.ScopeManifest  // this agent's scope manifest
+	ProjectDoc   string                 // content of project.md (length varies by tier)
+	RecentTasks  []*Task                // recent completed tasks for the same role
+	RelevantCode []string               // RAG results: recent task summaries + resolved error patterns
+	ADRs         []string               // Architecture Decision Records (tier 3 only)
+	Resolved     *state.ResolvedStore   // optional error pattern store for runtime lookups
+	Scope        *state.ScopeManifest   // this agent's scope manifest
 	AllScopes    []*state.ScopeManifest // all agent scopes for cross-agent awareness (tier 3 only)
-	AgentDoc     string                // role-specific memory from memory/agents/<role>.md
-	Scratchpad   *state.Scratchpad     // shared team scratchpad; may be nil
-	SkillContext string                // learned skills from previous tasks (Markdown)
-	SkillStore   *state.SkillStore     // reference for post-task skill updates; may be nil
+	AgentDoc     string                 // role-specific memory from memory/agents/<role>.md
+	Scratchpad   *state.Scratchpad      // shared team scratchpad; may be nil
+	SkillContext string                 // learned skills from previous tasks (Markdown)
+	SkillStore   *state.SkillStore      // reference for post-task skill updates; may be nil
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

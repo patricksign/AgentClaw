@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/summarizer"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/summarizer"
 	"github.com/rs/zerolog/log"
 )
 

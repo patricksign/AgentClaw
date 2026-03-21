@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/patricksign/agentclaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/agent"
 )
 
 // ─── Priority heap impl ───────────────────────────────────────────────────────
@@ -43,10 +43,10 @@ type Queue struct {
 	mu         sync.Mutex
 	heap       pq
 	doneIDs    map[string]bool
-	doneSeq    []string                // insertion-order list for eviction
-	inQueue    map[string]bool         // dedup: task IDs currently in the heap
-	roleIndex  map[string][]*item      // role → items for O(role_count) findReady
-	notify     chan struct{}           // global fallback signal
+	doneSeq    []string                 // insertion-order list for eviction
+	inQueue    map[string]bool          // dedup: task IDs currently in the heap
+	roleIndex  map[string][]*item       // role → items for O(role_count) findReady
+	notify     chan struct{}            // global fallback signal
 	roleNotify map[string]chan struct{} // per-role notification channels
 }
 

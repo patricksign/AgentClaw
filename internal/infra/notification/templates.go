@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/patricksign/agentclaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/domain"
 )
 
 // Format returns the HTML-formatted notification text and the target channel
@@ -103,6 +103,20 @@ func Format(event domain.Event) (text string, channel domain.Channel) {
 	case domain.EventParallelDone:
 		text = fmt.Sprintf("✅ <b>Parallel done</b>\n%s", esc(msg))
 		channel = domain.StatusChannel
+
+	case domain.EventFallbackTriggered:
+		from := event.Payload["from_model"]
+		to := event.Payload["to_model"]
+		text = fmt.Sprintf(
+			"🔀 <b>Fallback triggered</b>\nTask: <code>%s</code>\n<code>%s</code> → <code>%s</code>\n%s",
+			esc(taskID), esc(from), esc(to), esc(msg))
+		channel = domain.StatusChannel
+
+	case domain.EventFallbackExhausted:
+		text = fmt.Sprintf(
+			"🚨 <b>Fallback chain exhausted — all models failed</b>\nTask: <code>%s</code>\n%s",
+			esc(taskID), esc(msg))
+		channel = domain.HumanChannel
 
 	default:
 		text = fmt.Sprintf("<b>%s</b>\nTask: <code>%s</code>\n%s", event.Type, esc(taskID), esc(msg))

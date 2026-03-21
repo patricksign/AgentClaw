@@ -6,30 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/state"
 )
-
-// dbTimeout is the default timeout for SQLite operations.
-// SQLite is local disk I/O; 5s is generous for any single query.
-const dbTimeout = 5 * time.Second
-
-// Store manages the 3-layer memory architecture.
-type Store struct {
-	db          *sql.DB
-	projectPath string // path to project.md
-	resolved    *state.ResolvedStore
-	scope       *state.ScopeStore
-	agentDoc    *state.AgentDocStore
-	scratchpad  *state.Scratchpad
-}
 
 // Resolved returns the ResolvedStore for error pattern lookups and saves.
 // May be nil if the store was created without a state base directory.
@@ -84,65 +71,6 @@ func (s *Store) ReadScratchpadContext() string {
 		return ""
 	}
 	return ctx
-}
-
-func New(dbPath, projectPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal=WAL&_busy_timeout=5000&_synchronous=NORMAL")
-	if err != nil {
-		return nil, err
-	}
-	// WAL mode supports concurrent readers with a single writer.
-	// With 9 role workers + summarizer + API handlers, we need enough
-	// read connections to avoid blocking. SQLite serialises writes
-	// internally via _busy_timeout.
-	//
-	// _synchronous=NORMAL is safe with WAL — data is durable against
-	// application crashes (only OS crash can lose last txn, acceptable
-	// for task metadata).
-	// 9 role workers + cron + API handlers + pipeline goroutines need concurrent reads.
-	db.SetMaxOpenConns(16)
-	db.SetMaxIdleConns(8)
-	db.SetConnMaxLifetime(30 * time.Minute) // recycle connections to avoid stale state
-
-	s := &Store{db: db, projectPath: projectPath}
-	return s, s.migrate()
-}
-
-// NewWithState creates a Store and attaches a ResolvedStore rooted at stateBaseDir.
-// If stateBaseDir is empty, the ResolvedStore is not initialised (Resolved() returns nil).
-func NewWithState(dbPath, projectPath, stateBaseDir string) (*Store, error) {
-	s, err := New(dbPath, projectPath)
-	if err != nil {
-		return nil, err
-	}
-	if stateBaseDir != "" {
-		rs, rerr := state.NewResolvedStore(stateBaseDir)
-		if rerr != nil {
-			return nil, fmt.Errorf("memory: init resolved store: %w", rerr)
-		}
-		s.resolved = rs
-
-		ss, serr := state.NewScopeStore(stateBaseDir)
-		if serr != nil {
-			return nil, fmt.Errorf("memory: init scope store: %w", serr)
-		}
-		s.scope = ss
-
-		// Derive memoryBaseDir from stateBaseDir (sibling directory).
-		memoryBaseDir := filepath.Join(filepath.Dir(stateBaseDir), "memory")
-		ads, aerr := state.NewAgentDocStore(memoryBaseDir)
-		if aerr != nil {
-			return nil, fmt.Errorf("memory: init agent doc store: %w", aerr)
-		}
-		s.agentDoc = ads
-
-		sp, serr2 := state.NewScratchpad(stateBaseDir)
-		if serr2 != nil {
-			return nil, fmt.Errorf("memory: init scratchpad: %w", serr2)
-		}
-		s.scratchpad = sp
-	}
-	return s, nil
 }
 
 // Close checkpoints the WAL and closes the database connection.
@@ -206,11 +134,39 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	if err := s.migrateCheckpointsTable(); err != nil {
+		return fmt.Errorf("migrate checkpoints: %w", err)
+	}
 	return s.migratePreExecColumns()
 }
 
 // migratePreExecColumns adds the pre-execution protocol columns to existing databases.
 // Uses ALTER TABLE ... ADD COLUMN IF NOT EXISTS pattern — no-ops on fresh DBs.
+func (s *Store) migrateCheckpointsTable() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS checkpoints (
+			task_id         TEXT PRIMARY KEY,
+			agent_id        TEXT NOT NULL DEFAULT '',
+			phase           TEXT NOT NULL DEFAULT '',
+			step_index      INTEGER NOT NULL DEFAULT 0,
+			step_name       TEXT NOT NULL DEFAULT '',
+			accumulated     TEXT NOT NULL DEFAULT '{}',
+			pending_query   TEXT NOT NULL DEFAULT '',
+			pending_query_id TEXT NOT NULL DEFAULT '',
+			suspended_model TEXT NOT NULL DEFAULT '',
+			escalated_to    TEXT NOT NULL DEFAULT '',
+			last_system     TEXT NOT NULL DEFAULT '',
+			last_messages   TEXT NOT NULL DEFAULT '[]',
+			last_response   TEXT NOT NULL DEFAULT '',
+			input_tokens    INTEGER NOT NULL DEFAULT 0,
+			output_tokens   INTEGER NOT NULL DEFAULT 0,
+			cost_usd        REAL NOT NULL DEFAULT 0,
+			saved_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	return err
+}
+
 func (s *Store) migratePreExecColumns() error {
 	cols := []struct {
 		name       string
@@ -472,6 +428,11 @@ func (s *Store) ListADRs() ([]string, error) {
 
 // ─── Build MemoryContext for agents ──────────────────────────────────────────
 
+// estimateTokens returns the approximate token count for a string (1 token ≈ 4 chars).
+func estimateTokens(s string) int {
+	return (len(s) + 3) / 4
+}
+
 // truncateToTokens caps s at approximately maxTokens (1 token ≈ 4 chars).
 // If truncation occurs, "... [truncated]" is appended.
 func truncateToTokens(s string, maxTokens int) string {
@@ -482,139 +443,155 @@ func truncateToTokens(s string, maxTokens int) string {
 	return s[:maxChars] + "... [truncated]"
 }
 
-// BuildContext assembles a tiered MemoryContext based on task complexity.
-//
-// Complexity "S" — Tier 1 only (~500 tokens): AgentDoc, ScopeManifest, Scratchpad.
-// Complexity "M" — Tier 1 + Tier 2 (~1500 tokens total): adds RecentByRole(3),
-//
-//	ResolvedStore top-3 matches, first 800 chars of project.md.
-//
-// Complexity "L" — all tiers (~3000 tokens total): RecentByRole(5), full
-//
-//	project.md, ScopeStore.ReadAll() for cross-agent awareness.
-//
-// If complexity is empty it defaults to "M".
-func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) agent.MemoryContext {
-	if complexity == "" {
-		complexity = "M"
-	}
-	ctx := agent.MemoryContext{}
-
-	// ── Tier 1 — always loaded ────────────────────────────────────────────
-
-	// AgentDoc: role-specific conventions and pitfalls (cap 800 tokens).
-	if s.agentDoc != nil {
-		if doc, derr := s.agentDoc.Read(role); derr == nil {
-			ctx.AgentDoc = truncateToTokens(doc, 800)
-		} else {
-			log.Warn().Err(derr).Str("role", role).Msg("BuildContext: AgentDoc.Read failed")
-		}
-	}
-
-	// ScopeManifest: what this agent owns / must not touch.
-	if s.scope != nil {
-		if m, serr := s.scope.Read(role); serr != nil {
-			log.Warn().Err(serr).Str("role", role).Msg("BuildContext: scope.Read failed")
-		} else {
-			ctx.Scope = m
-		}
-	}
-
-	// Scratchpad: compact last-24 h team status (cap 400 tokens).
-	ctx.Scratchpad = s.scratchpad
-
-	// ── Tier 2 — M or L ──────────────────────────────────────────────────
-
-	// Read project doc once; tier determines the token cap applied below.
-	rawProjectDoc := s.ReadProjectDoc()
-
-	if complexity == "M" || complexity == "L" {
-		// RecentByRole: fetch 5 for L, 3 for M — single query avoids redundant DB call.
-		recentLimit := 3
-		if complexity == "L" {
-			recentLimit = 5
-		}
-		recent, err := s.RecentByRole(role, recentLimit)
-		if err != nil {
-			log.Warn().Err(err).Str("role", role).Msg("BuildContext: RecentByRole failed")
-		} else {
-			for _, t := range recent {
-				t.Lock()
-				title, desc := t.Title, t.Description
-				status := t.Status
-				t.Unlock()
-				entry := truncateToTokens(fmt.Sprintf("[%s] %s: %s", status, title, desc), 300)
-				ctx.RelevantCode = append(ctx.RelevantCode, entry)
-			}
-			ctx.RecentTasks = recent
-		}
-
-		// ResolvedStore: top-3 matching error patterns (cap 200 tokens each).
-		if s.resolved != nil {
-			if matches, serr := s.resolved.Search(taskTitle, role); serr == nil {
-				top := matches
-				if len(top) > 3 {
-					top = top[:3]
-				}
-				for _, m := range top {
-					snippet := truncateToTokens(
-						fmt.Sprintf("**%s** (seen %d×)\nFix: %s", m.ErrorPattern, m.OccurrenceCount, m.ResolutionSummary),
-						200,
-					)
-					ctx.RelevantCode = append(ctx.RelevantCode, snippet)
-				}
-			}
-		}
-
-		// Project doc: first 800 tokens only (M), full 2000 tokens (L).
-		if complexity == "L" {
-			ctx.ProjectDoc = truncateToTokens(rawProjectDoc, 2000)
-		} else {
-			ctx.ProjectDoc = truncateToTokens(rawProjectDoc, 800)
-		}
-	}
-
-	// ── Tier 3 — L only ──────────────────────────────────────────────────
-
-	if complexity == "L" {
-
-		// Cross-agent awareness via ScopeStore.ReadAll().
-		if s.scope != nil {
-			if all, aerr := s.scope.ReadAll(); aerr != nil {
-				log.Warn().Err(aerr).Msg("BuildContext: ScopeStore.ReadAll failed")
-			} else {
-				for i := range all {
-					ctx.AllScopes = append(ctx.AllScopes, &all[i])
-				}
-			}
-		}
-
-		// ADRs are only loaded at tier 3 to keep lower tiers lean.
-		adrs, err := s.ListADRs()
-		if err != nil {
-			log.Warn().Err(err).Msg("BuildContext: ListADRs failed")
-		} else {
-			ctx.ADRs = adrs
-		}
-	}
-
-	// ResolvedStore reference — agents use it directly for runtime lookups.
-	ctx.Resolved = s.resolved
-
-	return ctx
+// maxContextTokens defines the total token budget per complexity tier.
+// These budgets prevent context from exceeding the model's effective window
+// and keep costs proportional to task importance.
+var maxContextTokens = map[string]int{
+	"S": 2000,  // ~8 KB — minimal context for cheap fast tasks
+	"M": 6000,  // ~24 KB — standard context for mid-tier tasks
+	"L": 12000, // ~48 KB — full context for complex tasks
 }
 
-// ─── Token Logs ──────────────────────────────────────────────────────────────
+// enforceTokenBudget checks the total token usage of all string fields in the
+// context and proportionally trims the largest sections if the budget is exceeded.
+// Fields are trimmed in priority order (lowest priority trimmed first):
+// ADRs → RelevantCode → ProjectDoc → AgentDoc (never trimmed below 200 tokens).
+func enforceTokenBudget(ctx *agent.MemoryContext, budget int) {
+	type section struct {
+		ptr      *string
+		name     string
+		priority int // higher = more important = trimmed last
+	}
 
-type TokenLog struct {
-	TaskID       string    `json:"task_id"`
-	AgentID      string    `json:"agent_id"`
-	Model        string    `json:"model"`
-	InputTokens  int64     `json:"input_tokens"`
-	OutputTokens int64     `json:"output_tokens"`
-	CostUSD      float64   `json:"cost_usd"`
-	DurationMs   int64     `json:"duration_ms"`
-	CreatedAt    time.Time `json:"created_at"`
+	sections := []section{
+		{ptr: &ctx.ProjectDoc, name: "ProjectDoc", priority: 2},
+		{ptr: &ctx.AgentDoc, name: "AgentDoc", priority: 4},
+	}
+
+	// Calculate current total from string fields.
+	total := estimateTokens(ctx.ProjectDoc) + estimateTokens(ctx.AgentDoc)
+	for _, c := range ctx.RelevantCode {
+		total += estimateTokens(c)
+	}
+	for _, a := range ctx.ADRs {
+		total += estimateTokens(a)
+	}
+
+	if total <= budget {
+		return // within budget
+	}
+
+	excess := total - budget
+
+	// Phase 1: Trim ADRs (lowest priority).
+	for i := len(ctx.ADRs) - 1; i >= 0 && excess > 0; i-- {
+		tokens := estimateTokens(ctx.ADRs[i])
+		ctx.ADRs = ctx.ADRs[:i]
+		excess -= tokens
+	}
+
+	// Phase 2: Trim RelevantCode from the end.
+	for i := len(ctx.RelevantCode) - 1; i >= 0 && excess > 0; i-- {
+		tokens := estimateTokens(ctx.RelevantCode[i])
+		ctx.RelevantCode = ctx.RelevantCode[:i]
+		excess -= tokens
+	}
+
+	// Phase 3: Proportionally trim string sections (lowest priority first).
+	// Sort by priority ascending so we trim least important first.
+	sort.Slice(sections, func(i, j int) bool {
+		return sections[i].priority < sections[j].priority
+	})
+
+	for _, s := range sections {
+		if excess <= 0 {
+			break
+		}
+		current := estimateTokens(*s.ptr)
+		minTokens := 200 // never trim below 200 tokens
+		if current <= minTokens {
+			continue
+		}
+		canTrim := current - minTokens
+		trimAmount := canTrim
+		if trimAmount > excess {
+			trimAmount = excess
+		}
+		newCap := current - trimAmount
+		*s.ptr = truncateToTokens(*s.ptr, newCap)
+		excess -= trimAmount
+	}
+
+	if excess > 0 {
+		log.Warn().Int("excess_tokens", excess).Int("budget", budget).
+			Msg("BuildContext: could not fit within token budget after trimming")
+	}
+}
+
+// ─── Checkpoint Store (SQLite) ────────────────────────────────────────────────
+
+// SaveCheckpoint persists a phase checkpoint, replacing any existing one for the task.
+func (s *Store) SaveCheckpoint(cp *domain.PhaseCheckpoint) error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	accum, _ := json.Marshal(cp.Accumulated)
+	msgs, _ := json.Marshal(cp.LastMessages)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO checkpoints
+		(task_id,agent_id,phase,step_index,step_name,accumulated,
+		 pending_query,pending_query_id,suspended_model,escalated_to,
+		 last_system,last_messages,last_response,
+		 input_tokens,output_tokens,cost_usd,saved_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		cp.TaskID, cp.AgentID, string(cp.Phase), cp.StepIndex, cp.StepName, string(accum),
+		cp.PendingQuery, cp.PendingQueryID, cp.SuspendedModel, cp.EscalatedTo,
+		cp.LastSystemPrompt, string(msgs), cp.LastResponse,
+		cp.InputTokens, cp.OutputTokens, cp.CostUSD, time.Now(),
+	)
+	return err
+}
+
+// LoadCheckpoint retrieves a checkpoint for a task. Returns nil, nil if none exists.
+func (s *Store) LoadCheckpoint(taskID string) (*domain.PhaseCheckpoint, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	var cp domain.PhaseCheckpoint
+	var phase, accum, msgs string
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT task_id,agent_id,phase,step_index,step_name,accumulated,
+		       pending_query,pending_query_id,suspended_model,escalated_to,
+		       last_system,last_messages,last_response,
+		       input_tokens,output_tokens,cost_usd,saved_at
+		FROM checkpoints WHERE task_id=?`, taskID).Scan(
+		&cp.TaskID, &cp.AgentID, &phase, &cp.StepIndex, &cp.StepName, &accum,
+		&cp.PendingQuery, &cp.PendingQueryID, &cp.SuspendedModel, &cp.EscalatedTo,
+		&cp.LastSystemPrompt, &msgs, &cp.LastResponse,
+		&cp.InputTokens, &cp.OutputTokens, &cp.CostUSD, &cp.SavedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load checkpoint %s: %w", taskID, err)
+	}
+
+	cp.Phase = domain.ExecutionPhase(phase)
+	_ = json.Unmarshal([]byte(accum), &cp.Accumulated)
+	_ = json.Unmarshal([]byte(msgs), &cp.LastMessages)
+
+	return &cp, nil
+}
+
+// DeleteCheckpoint removes the checkpoint for a task.
+func (s *Store) DeleteCheckpoint(taskID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM checkpoints WHERE task_id=?`, taskID)
+	return err
 }
 
 func (s *Store) LogTokens(l TokenLog) error {
@@ -667,16 +644,6 @@ func (s *Store) GetTokenLogs(taskID string) ([]TokenLog, error) {
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
-}
-
-// ─── Metrics ─────────────────────────────────────────────────────────────────
-
-type PeriodStats struct {
-	Period       string  `json:"period"`
-	TotalTasks   int     `json:"total_tasks"`
-	DoneTasks    int     `json:"done_tasks"`
-	TotalTokens  int64   `json:"total_tokens"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
 }
 
 func (s *Store) StatsForPeriod(dateExpr string) (*PeriodStats, error) {

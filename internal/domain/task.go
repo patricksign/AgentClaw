@@ -19,7 +19,7 @@ type Question struct {
 	ID         string    `json:"id"`
 	Text       string    `json:"text"`
 	Answer     string    `json:"answer"`
-	AnsweredBy string    `json:"answered_by"` // "sonnet" | "opus" | "human" | "cache"
+	AnsweredBy string    `json:"answered_by"` // "haiku" | "sonnet" | "opus" | "human" | "cache"
 	Resolved   bool      `json:"resolved"`
 	CreatedAt  time.Time `json:"created_at"`
 }

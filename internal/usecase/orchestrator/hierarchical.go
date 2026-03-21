@@ -9,14 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 const breakdownSystem = `Break down this task into subtasks for specialist agents.
-Return ONLY JSON array:
-[{"title":"...","role":"coding|test|docs|review",
-  "complexity":"S|M|L","model":"minimax|glm5|glm|sonnet"}]
+Return ONLY compact JSON array (no whitespace, no markdown fences):
+[{"title":"...","role":"coding|test|docs|review","complexity":"S|M|L","model":"minimax|glm5|glm-flash|haiku|sonnet"}]
 Max 8 subtasks.`
 
 const assignSystem = `Review these subtasks and optimize assignment.
@@ -67,7 +66,7 @@ func (h *HierarchicalOrchestrator) Run(
 
 	breakdownCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	resp, err := h.router.Call(breakdownCtx, port.LLMRequest{
-		Model:     "opus",
+		Model:     domain.ModelOpus,
 		System:    breakdownSystem,
 		Messages:  []port.LLMMessage{{Role: "user", Content: userMsg}},
 		MaxTokens: 4096,
@@ -75,7 +74,7 @@ func (h *HierarchicalOrchestrator) Run(
 	})
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("hierarchical: opus breakdown: %w", err)
+		return nil, fmt.Errorf("hierarchical: %s breakdown: %w", domain.ModelOpus, err)
 	}
 
 	raw := stripMarkdownFences(resp.Content)
@@ -84,7 +83,7 @@ func (h *HierarchicalOrchestrator) Run(
 		return nil, fmt.Errorf("hierarchical: parse breakdown JSON: %w", err)
 	}
 	if len(subtaskDefs) == 0 {
-		return nil, fmt.Errorf("hierarchical: opus returned 0 subtasks")
+		return nil, fmt.Errorf("hierarchical: %s returned 0 subtasks", domain.ModelOpus)
 	}
 	if len(subtaskDefs) > 8 {
 		subtaskDefs = subtaskDefs[:8]
@@ -97,7 +96,7 @@ func (h *HierarchicalOrchestrator) Run(
 
 	assignCtx, assignCancel := context.WithTimeout(ctx, 60*time.Second)
 	assignResp, err := h.router.Call(assignCtx, port.LLMRequest{
-		Model:     "sonnet",
+		Model:     domain.ModelSonnet,
 		System:    assignSystem,
 		Messages:  []port.LLMMessage{{Role: "user", Content: assignMsg}},
 		MaxTokens: 4096,
@@ -105,7 +104,7 @@ func (h *HierarchicalOrchestrator) Run(
 	})
 	assignCancel()
 	if err != nil {
-		return nil, fmt.Errorf("hierarchical: sonnet assign: %w", err)
+		return nil, fmt.Errorf("hierarchical: %s assign: %w", domain.ModelSonnet, err)
 	}
 
 	assignRaw := stripMarkdownFences(assignResp.Content)

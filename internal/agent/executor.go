@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/state"
 	"github.com/rs/zerolog/log"
 )
 
@@ -287,10 +287,10 @@ func (e *Executor) Execute(ctx context.Context, task *Task) error {
 		// Record failure reflection for skill improvement.
 		if e.skillStore != nil {
 			failReflection := state.PostTaskReflection{
-				TaskID:    taskID,
-				AgentID:   agentID,
-				Role:      taskRole,
-				Success:   false,
+				TaskID:  taskID,
+				AgentID: agentID,
+				Role:    taskRole,
+				Success: false,
 				AntiPatterns: []string{
 					fmt.Sprintf("Task '%s' failed: %s", taskTitle, truncateForReflection(err.Error(), 200)),
 				},

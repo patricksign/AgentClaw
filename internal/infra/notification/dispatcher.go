@@ -3,9 +3,9 @@ package notification
 import (
 	"context"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/integrations/telegram"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/integrations/telegram"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // Compile-time check: TelegramDispatcher implements port.Notifier.

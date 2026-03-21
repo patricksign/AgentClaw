@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/state"
 )
 
 func (s *Server) HandlerScratchpad(mux *http.ServeMux) {

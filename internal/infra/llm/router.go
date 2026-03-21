@@ -3,9 +3,9 @@ package llm
 import (
 	"context"
 
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/port"
 
-	llmcore "github.com/patricksign/agentclaw/internal/llm"
+	llmcore "github.com/patricksign/AgentClaw/internal/llm"
 )
 
 // Compile-time check: Router implements port.LLMRouter.

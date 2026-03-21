@@ -3,7 +3,7 @@ package port
 import (
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/domain"
 )
 
 // ─── Task Store ─────────────────────────────────────────────────────────────
@@ -63,8 +63,8 @@ type TaskMetrics struct {
 	OutputTokens   int64   `json:"output_tokens"`
 	CacheHitTokens int64   `json:"cache_hit_tokens"`
 	DurationMs     int64   `json:"duration_ms"`
-	CostMode       string  `json:"cost_mode"`     // "cache_hit", "batch", etc.
-	CostSavingsUSD float64 `json:"cost_savings"`  // how much saved vs standard pricing
+	CostMode       string  `json:"cost_mode"`    // "cache_hit", "batch", etc.
+	CostSavingsUSD float64 `json:"cost_savings"` // how much saved vs standard pricing
 }
 
 // StateStore reads and writes per-agent runtime state.
@@ -90,4 +90,20 @@ type MemoryContext struct {
 type MemoryStore interface {
 	BuildContext(agentID, role, taskTitle, complexity string) MemoryContext
 	AppendProjectDoc(section string) error
+}
+
+// ─── Checkpoint Store ──────────────────────────────────────────────────────
+
+// CheckpointStore persists and retrieves phase checkpoints.
+// Checkpoints capture the full execution state when a phase suspends
+// (e.g., to escalate a question), allowing exact resume without re-work.
+type CheckpointStore interface {
+	// Save persists a checkpoint, overwriting any existing one for the same taskID.
+	Save(checkpoint *domain.PhaseCheckpoint) error
+
+	// Load retrieves the checkpoint for a task. Returns nil, nil if none exists.
+	Load(taskID string) (*domain.PhaseCheckpoint, error)
+
+	// Delete removes the checkpoint for a task (called after phase completes).
+	Delete(taskID string) error
 }

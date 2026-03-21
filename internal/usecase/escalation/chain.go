@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patricksign/agentclaw/internal/domain"
-	"github.com/patricksign/agentclaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/domain"
+	"github.com/patricksign/AgentClaw/internal/port"
 )
 
 // HumanAsker abstracts the human notification channel (Telegram, Slack, etc.).
@@ -17,43 +17,79 @@ type HumanAsker interface {
 }
 
 // Chain implements port.Escalator using a multi-level resolution strategy:
-// cache → cheaper model → more capable model → human.
+// cache → next-tier model → higher-tier model → … → human.
+//
+// Escalation priority (low → high):
+//
+//	glm-flash → sonnet → opus → human
+//	haiku/glm5/minimax → sonnet → opus → human
 type Chain struct {
-	router   port.LLMRouter
-	notifier port.Notifier
-	cache    *Cache
-	asker    HumanAsker
+	router     port.LLMRouter
+	notifier   port.Notifier
+	cache      *Cache
+	asker      HumanAsker
+	checkpoint port.CheckpointStore
 }
 
 // NewChain creates an escalation chain with all dependencies.
-func NewChain(router port.LLMRouter, notifier port.Notifier, cache *Cache, asker HumanAsker) *Chain {
+func NewChain(
+	router port.LLMRouter,
+	notifier port.Notifier,
+	cache *Cache,
+	asker HumanAsker,
+	checkpoint port.CheckpointStore,
+) *Chain {
 	return &Chain{
-		router:   router,
-		notifier: notifier,
-		cache:    cache,
-		asker:    asker,
+		router:     router,
+		notifier:   notifier,
+		cache:      cache,
+		asker:      asker,
+		checkpoint: checkpoint,
 	}
 }
 
 // Resolve implements port.Escalator.
+// Before each escalation step, it saves a checkpoint so the task can resume
+// from exactly the right point if the process is interrupted or suspended.
 func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.EscalationResult, error) {
 	// Step 1 — Check cache.
 	if answer, hit := c.cache.Check(req.Question, req.AgentRole); hit {
 		c.dispatch(ctx, domain.EventQuestionAnswered, domain.StatusChannel, req, map[string]string{
 			"message":     "Resolved from cache",
-			"answered_by": "cache",
+			"answered_by": domain.ModelCache,
 		})
-		return domain.EscalationResult{Answer: answer, AnsweredBy: "cache", Resolved: true}, nil
+		return domain.EscalationResult{Answer: answer, AnsweredBy: domain.ModelCache, Resolved: true}, nil
 	}
 
-	// Step 2 — Determine starting level.
-	startLevel := c.levelFor(req.AgentModel)
+	// Step 2 — Build escalation chain from the agent's model.
+	chain := domain.EscalationChain(req.AgentModel)
 
-	// Step 3 — Try each model level with 30s timeout.
-	for level := startLevel; level != "human"; level = c.nextLevel(level) {
+	// Step 3 — Try each model level (excluding "human") with 30s timeout.
+	for _, level := range chain {
+		if domain.IsHumanLevel(level) {
+			break // fall through to human escalation below
+		}
+
+		// Save checkpoint before each LLM escalation attempt.
+		if c.checkpoint != nil {
+			cp := &domain.PhaseCheckpoint{
+				TaskID:         req.TaskID,
+				Phase:          domain.PhaseClarify,
+				StepName:       "escalation",
+				PendingQuery:   req.Question,
+				PendingQueryID: req.QuestionID,
+				SuspendedModel: req.AgentModel,
+				EscalatedTo:    level,
+				Accumulated: map[string]string{
+					"task_context": req.TaskContext,
+					"agent_role":   req.AgentRole,
+				},
+			}
+			_ = c.checkpoint.Save(cp)
+		}
+
 		answer, confident, tryErr := c.tryAt(ctx, level, req.Question, req.TaskContext, req.TaskID)
 		if tryErr != nil {
-			// Log but continue escalation — transient errors should not block the chain.
 			c.dispatch(ctx, domain.EventEscalated, domain.StatusChannel, req, map[string]string{
 				"message": fmt.Sprintf("LLM error at %s: %s — escalating", level, truncate(tryErr.Error(), 80)),
 			})
@@ -61,6 +97,12 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 		}
 		if confident {
 			c.cache.Save(req.Question, answer, req.AgentRole)
+
+			// Clear checkpoint — question resolved.
+			if c.checkpoint != nil {
+				_ = c.checkpoint.Delete(req.TaskID)
+			}
+
 			c.dispatch(ctx, domain.EventEscalated, domain.StatusChannel, req, map[string]string{
 				"message":     fmt.Sprintf("Question resolved by %s — Q: %s", level, truncate(req.Question, 80)),
 				"answered_by": level,
@@ -70,6 +112,25 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 	}
 
 	// Step 4 — Escalate to human.
+	// Save checkpoint before human escalation — this could take hours/days.
+	if c.checkpoint != nil {
+		cp := &domain.PhaseCheckpoint{
+			TaskID:         req.TaskID,
+			Phase:          domain.PhaseClarify,
+			StepName:       "human_escalation",
+			PendingQuery:   req.Question,
+			PendingQueryID: req.QuestionID,
+			SuspendedModel: req.AgentModel,
+			EscalatedTo:    domain.ModelHuman,
+			Accumulated: map[string]string{
+				"task_context":    req.TaskContext,
+				"agent_role":      req.AgentRole,
+				"escalation_path": strings.Join(chain, " → "),
+			},
+		}
+		_ = c.checkpoint.Save(cp)
+	}
+
 	msgID, err := c.asker.AskHuman(ctx, req.AgentModel, req.TaskID, "", req.QuestionID, req.Question)
 	if err != nil {
 		return domain.EscalationResult{}, fmt.Errorf("escalation: ask human: %w", err)
@@ -77,8 +138,8 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 	answerCh := c.asker.RegisterReply(msgID, req.TaskID, req.QuestionID)
 
 	c.dispatch(ctx, domain.EventEscalated, domain.HumanChannel, req, map[string]string{
-		"message": fmt.Sprintf("Full escalation chain exhausted — needs human. Path: %s → %s → human",
-			req.AgentModel, startLevel),
+		"message": fmt.Sprintf("Full escalation chain exhausted — needs human. Path: %s",
+			strings.Join(chain, " → ")),
 	})
 
 	waitCtx, cancel := context.WithTimeout(ctx, 24*time.Hour)
@@ -90,35 +151,15 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 			return domain.EscalationResult{}, fmt.Errorf("question expired")
 		}
 		c.cache.Save(req.Question, answer, req.AgentRole)
-		return domain.EscalationResult{Answer: answer, AnsweredBy: "human", Resolved: true}, nil
+
+		// Clear checkpoint — human answered.
+		if c.checkpoint != nil {
+			_ = c.checkpoint.Delete(req.TaskID)
+		}
+
+		return domain.EscalationResult{Answer: answer, AnsweredBy: domain.ModelHuman, Resolved: true}, nil
 	case <-waitCtx.Done():
 		return domain.EscalationResult{NeedsHuman: true}, nil
-	}
-}
-
-// levelFor determines which model to try first based on the agent's own model.
-func (c *Chain) levelFor(model string) string {
-	switch {
-	case strings.HasPrefix(model, "glm"), strings.HasPrefix(model, "minimax"):
-		return "sonnet"
-	case model == "sonnet":
-		return "opus"
-	case model == "opus":
-		return "human"
-	default:
-		return "sonnet"
-	}
-}
-
-// nextLevel returns the next escalation level.
-func (c *Chain) nextLevel(level string) string {
-	switch level {
-	case "sonnet":
-		return "opus"
-	case "opus":
-		return "human"
-	default:
-		return "human"
 	}
 }
 

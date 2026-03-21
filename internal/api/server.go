@@ -4,13 +4,13 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/patricksign/agentclaw/internal/agent"
-	"github.com/patricksign/agentclaw/internal/integrations/pipeline"
-	"github.com/patricksign/agentclaw/internal/integrations/trello"
-	"github.com/patricksign/agentclaw/internal/memory"
-	"github.com/patricksign/agentclaw/internal/queue"
-	"github.com/patricksign/agentclaw/internal/state"
-	"github.com/patricksign/agentclaw/internal/summarizer"
+	"github.com/patricksign/AgentClaw/internal/agent"
+	"github.com/patricksign/AgentClaw/internal/integrations/pipeline"
+	"github.com/patricksign/AgentClaw/internal/integrations/trello"
+	"github.com/patricksign/AgentClaw/internal/memory"
+	"github.com/patricksign/AgentClaw/internal/queue"
+	"github.com/patricksign/AgentClaw/internal/state"
+	"github.com/patricksign/AgentClaw/internal/summarizer"
 )
 
 // ─── Server ──────────────────────────────────────────────────────────────────
