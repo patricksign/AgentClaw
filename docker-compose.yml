@@ -8,25 +8,24 @@ services:
     container_name: agentclaw
     restart: unless-stopped
     ports:
-      - "8080:8080"         # API + WebSocket + Dashboard
+      - "${ADDR_PORT:-8080}:8080"
     env_file:
-      - .env                # API keys — copy from .env.example
+      - .env
     environment:
       ADDR:          ":8080"
       DB_PATH:       "/app/data/agentclaw.db"
       PROJECT_PATH:  "/app/memory/project.md"
-      SCOPE_PATH:    "/app/state"
+      STATE_PATH:    "/app/state"
       PRICING_PATH:  "/app/pricing/agent-pricing.json"
       AGENTS_CONFIG: "/app/config/agents.json"
       TZ:            "Asia/Ho_Chi_Minh"
     volumes:
-      # Persistent data — survives container restart
-      - ./data:/app/data              # SQLite database
-      - ./memory:/app/memory          # project.md + agent docs
-      - ./state:/app/state            # scope manifests, resolved patterns
-      - ./static:/app/static          # dashboard HTML
-      - ./pricing:/app/pricing        # model pricing JSON
-      - ./config:/app/config          # agent configuration
+      - agentclaw-data:/app/data
+      - ./memory:/app/memory
+      - ./state:/app/state
+      - ./static:/app/static
+      - ./pricing:/app/pricing
+      - ./config:/app/config
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s
@@ -35,22 +34,45 @@ services:
       start_period: 10s
     networks:
       - agentclaw-net
+    depends_on:
+      sqlite-web:
+        condition: service_started
 
-  # ─── ngrok tunnel (optional, expose local to internet for Telegram webhook) ─
-  # Uncomment if you need Telegram to reach your local dev server
-  #
-  # ngrok:
-  #   image: ngrok/ngrok:latest
-  #   container_name: agentclaw-ngrok
-  #   command: http agentclaw:8080
-  #   environment:
-  #     NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-  #   ports:
-  #     - "4040:4040"       # ngrok dashboard
-  #   depends_on:
-  #     - agentclaw
-  #   networks:
-  #     - agentclaw-net
+  # ─── SQLite Web UI (optional — browse DB in browser) ────────────────────────
+  sqlite-web:
+    image: coleifer/sqlite-web:latest
+    container_name: agentclaw-sqlite-web
+    restart: unless-stopped
+    ports:
+      - "${SQLITE_WEB_PORT:-8081}:8080"
+    environment:
+      SQLITE_DATABASE: /data/agentclaw.db
+    volumes:
+      - agentclaw-data:/data
+    networks:
+      - agentclaw-net
+    profiles:
+      - debug
+
+  # ─── ngrok tunnel (optional — expose to internet for Telegram webhook) ──────
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: agentclaw-ngrok
+    command: http agentclaw:8080
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
+    depends_on:
+      - agentclaw
+    networks:
+      - agentclaw-net
+    profiles:
+      - tunnel
+
+volumes:
+  agentclaw-data:
+    driver: local
 
 networks:
   agentclaw-net:
