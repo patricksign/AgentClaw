@@ -32,10 +32,12 @@ func (r *Router) callWithFallback(ctx context.Context, req Request, chain []stri
 		for attempt := range MaxRetries {
 			if attempt > 0 {
 				delay := time.Duration(RetryIntervals[attempt-1]) * time.Second
+				timer := time.NewTimer(delay)
 				select {
 				case <-ctx.Done():
+					timer.Stop()
 					return nil, ctx.Err()
-				case <-time.After(delay):
+				case <-timer.C:
 				}
 			}
 

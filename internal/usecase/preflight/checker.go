@@ -119,9 +119,10 @@ func (c *Checker) checkTool(ctx context.Context, tool domain.ToolRequirement, wo
 	}
 
 	// Extract version from first line of stdout.
+	// Use strings.Clone to avoid retaining full stdout backing array (#41).
 	version := result.Stdout
 	if idx := strings.IndexByte(version, '\n'); idx != -1 {
-		version = version[:idx]
+		version = strings.Clone(version[:idx])
 	}
 
 	return domain.PreflightResult{

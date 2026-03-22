@@ -9,6 +9,7 @@ import (
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
 	"github.com/patricksign/AgentClaw/internal/usecase/phase"
+	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
 )
 
 const defaultMaxFixAttempts = 3
@@ -113,13 +114,14 @@ func (t *TestFixOrchestrator) Run(
 
 		fixPrompt := buildFixPrompt(testResult, attempt)
 		fixCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-		fixResp, fixErr := t.llmRouter.Call(fixCtx, port.LLMRequest{
+		fixReq := reasoning.WithThinking(port.LLMRequest{
 			Model:     domain.WorkerModelForComplexity(task.Complexity),
 			System:    "You are a senior engineer. Fix the code based on the test failure output. Return ONLY the corrected code with file paths.",
 			Messages:  []port.LLMMessage{{Role: "user", Content: fixPrompt}},
 			MaxTokens: 8192,
 			TaskID:    task.ID,
-		})
+		}, domain.PhaseImplement, task.Complexity)
+		fixResp, fixErr := t.llmRouter.Call(fixCtx, fixReq)
 		cancel()
 
 		if fixErr != nil {
@@ -130,6 +132,7 @@ func (t *TestFixOrchestrator) Run(
 		implResult.Output = fixResp.Content
 		implResult.InputTokens += fixResp.InputTokens
 		implResult.OutputTokens += fixResp.OutputTokens
+		implResult.ThinkingTokens += fixResp.ThinkingTokens
 		implResult.CostUSD += fixResp.CostUSD
 	}
 
@@ -152,15 +155,16 @@ func buildFixPrompt(testResult port.CommandResult, attempt int) string {
 	sb.WriteString(fmt.Sprintf("Test failure (attempt %d). Fix the code.\n\n", attempt))
 	sb.WriteString("--- STDOUT ---\n")
 	// Cap stdout to ~2000 chars to control token usage.
+	// Use strings.Clone to avoid retaining the full backing array (#41 substring leak).
 	stdout := testResult.Stdout
 	if len(stdout) > 2000 {
-		stdout = stdout[:2000] + "\n... [truncated]"
+		stdout = strings.Clone(stdout[:2000]) + "\n... [truncated]"
 	}
 	sb.WriteString(stdout)
 	sb.WriteString("\n\n--- STDERR ---\n")
 	stderr := testResult.Stderr
 	if len(stderr) > 2000 {
-		stderr = stderr[:2000] + "\n... [truncated]"
+		stderr = strings.Clone(stderr[:2000]) + "\n... [truncated]"
 	}
 	sb.WriteString(stderr)
 	return sb.String()

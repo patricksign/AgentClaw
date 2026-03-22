@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -537,10 +538,16 @@ func (s *Store) SaveCheckpoint(cp *domain.PhaseCheckpoint) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
-	accum, _ := json.Marshal(cp.Accumulated)
-	msgs, _ := json.Marshal(cp.LastMessages)
+	accum, err := json.Marshal(cp.Accumulated)
+	if err != nil {
+		return fmt.Errorf("save checkpoint %s: marshal accumulated: %w", cp.TaskID, err)
+	}
+	msgs, mErr := json.Marshal(cp.LastMessages)
+	if mErr != nil {
+		return fmt.Errorf("save checkpoint %s: marshal messages: %w", cp.TaskID, mErr)
+	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO checkpoints
 		(task_id,agent_id,phase,step_index,step_name,accumulated,
 		 pending_query,pending_query_id,suspended_model,escalated_to,
@@ -575,7 +582,7 @@ func (s *Store) LoadCheckpoint(taskID string) (*domain.PhaseCheckpoint, error) {
 		&cp.InputTokens, &cp.OutputTokens, &cp.CostUSD, &cp.SavedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("load checkpoint %s: %w", taskID, err)

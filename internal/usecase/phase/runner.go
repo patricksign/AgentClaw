@@ -53,8 +53,7 @@ func (r *Runner) Run(ctx context.Context, pctx PhaseContext) (*domain.TaskResult
 		}
 	}
 
-	for iteration := range maxPhaseIterations {
-		_ = iteration
+	for range maxPhaseIterations {
 
 		switch task.Phase {
 		case domain.PhaseUnderstand:
@@ -94,9 +93,7 @@ func (r *Runner) Run(ctx context.Context, pctx PhaseContext) (*domain.TaskResult
 			}
 
 			// Task complete — clean up checkpoint.
-			if pctx.CheckpointStore != nil {
-				_ = pctx.CheckpointStore.Delete(task.ID)
-			}
+			deleteCheckpoint(pctx, task.ID)
 
 			return result.TaskResult, nil
 

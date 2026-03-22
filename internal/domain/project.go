@@ -30,7 +30,7 @@ var RequiredFields = []string{
 	"database",
 	"auth_method",
 	"target_platforms",
-	"third_party_integrations",
+	"integrations",
 }
 
 // IdeaClarifyResult is the JSON structure returned by Opus during idea clarification.

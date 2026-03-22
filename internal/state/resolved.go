@@ -232,11 +232,15 @@ func (r *ResolvedStore) MarkResolved(id string) error {
 // LoadAll returns all ErrorPattern entries sorted by OccurrenceCount descending.
 func (r *ResolvedStore) LoadAll() ([]ErrorPattern, error) {
 	r.mu.Lock()
-	patterns, err := r.loadIndex()
+	cached, err := r.loadIndex()
 	r.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
+
+	// Copy before sorting to avoid mutating the shared cache slice in-place (#70).
+	patterns := make([]ErrorPattern, len(cached))
+	copy(patterns, cached)
 
 	sort.Slice(patterns, func(i, j int) bool {
 		return patterns[i].OccurrenceCount > patterns[j].OccurrenceCount

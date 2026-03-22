@@ -129,6 +129,58 @@ func WorkerModelForComplexity(complexity string) string {
 
 // ─── Prompt Cache ──────────────────────────────────────────────────────────
 
+// ─── Extended Thinking ────────────────────────────────────────────────────
+
+// SupportsExtendedThinking returns true if the model supports extended thinking
+// (chain-of-thought reasoning before generating the final answer).
+// Currently only Anthropic Opus and Sonnet support this capability.
+func SupportsExtendedThinking(model string) bool {
+	switch model {
+	case ModelOpus, ModelSonnet:
+		return true
+	default:
+		return false
+	}
+}
+
+// DefaultThinkingBudget returns the recommended thinking token budget
+// for the given model and execution phase. Returns 0 if thinking
+// is not recommended for this combination.
+func DefaultThinkingBudget(model string, phase ExecutionPhase) int {
+	tier := TierFor(model)
+	switch {
+	case tier >= TierExpert: // Opus
+		switch phase {
+		case PhasePlan:
+			return 10000
+		case PhaseUnderstand:
+			return 8000
+		case PhaseImplement:
+			return 6000
+		default:
+			return 5000
+		}
+	case tier == TierSmart: // Sonnet
+		switch phase {
+		case PhasePlan:
+			return 4000
+		case PhaseUnderstand:
+			return 4000
+		case PhaseImplement:
+			return 3000
+		default:
+			return 2000
+		}
+	case tier == TierWorker: // MiniMax, Kimi, GLM5
+		if phase == PhaseImplement {
+			return 2000
+		}
+		return 0
+	default: // Flash
+		return 0
+	}
+}
+
 // CacheTTL constants for Anthropic prompt caching.
 const (
 	CacheTTLEphemeral = "ephemeral" // 5 min — task-specific content

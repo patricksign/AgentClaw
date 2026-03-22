@@ -9,6 +9,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
 )
 
 const planSystem = `Write a detailed implementation plan. Return ONLY compact JSON (no whitespace, no markdown fences):
@@ -67,6 +68,7 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint *doma
 			TTL:         domain.CacheTTLForContent("system"),
 		}
 	}
+	planReq = reasoning.WithThinking(planReq, domain.PhasePlan, task.Complexity)
 	resp, err := pctx.Router.Call(callCtx, planReq)
 	cancel()
 	if err != nil {
@@ -118,6 +120,7 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint *doma
 			TTL:         domain.CacheTTLForContent("system"),
 		}
 	}
+	reviewReq = reasoning.WithThinking(reviewReq, domain.PhasePlan, task.Complexity)
 	reviewResp, err := pctx.Router.Call(reviewCtx, reviewReq)
 	reviewCancel()
 	if err != nil {
@@ -136,9 +139,7 @@ func (p *PlanPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint *doma
 		}
 
 		// Clear checkpoint — plan approved.
-		if pctx.CheckpointStore != nil {
-			_ = pctx.CheckpointStore.Delete(task.ID)
-		}
+		deleteCheckpoint(pctx, task.ID)
 
 		dispatchEvent(ctx, pctx.Notifier, domain.Event{
 			Type:      domain.EventPlanApproved,

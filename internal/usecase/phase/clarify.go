@@ -7,6 +7,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/rs/zerolog/log"
 )
 
 // ClarifyPhase resolves unresolved questions via the escalation chain.
@@ -43,7 +44,7 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 
 		if result.NeedsHuman {
 			// Update state: blocked waiting for human.
-			_ = pctx.StateStore.WriteState(pctx.AgentCfg.ID, port.AgentState{
+			if err := pctx.StateStore.WriteState(pctx.AgentCfg.ID, port.AgentState{
 				AgentID:   pctx.AgentCfg.ID,
 				Role:      pctx.AgentCfg.Role,
 				Model:     pctx.AgentCfg.Model,
@@ -53,7 +54,9 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 				Blockers:  q.Text,
 				TimeStuck: time.Since(task.PhaseStartedAt).String(),
 				UpdatedAt: time.Now(),
-			})
+			}); err != nil {
+				log.Warn().Err(err).Str("agent", pctx.AgentCfg.ID).Msg("clarify: state write failed")
+			}
 
 			dispatchEvent(ctx, pctx.Notifier, domain.Event{
 				Type:      domain.EventQuestionAsked,
@@ -96,7 +99,7 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 		return domain.PhaseResult{Err: fmt.Errorf("clarify: save task: %w", err)}
 	}
 
-	_ = pctx.StateStore.WriteState(pctx.AgentCfg.ID, port.AgentState{
+	if err := pctx.StateStore.WriteState(pctx.AgentCfg.ID, port.AgentState{
 		AgentID:   pctx.AgentCfg.ID,
 		Role:      pctx.AgentCfg.Role,
 		Model:     pctx.AgentCfg.Model,
@@ -105,7 +108,9 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 		TaskTitle: task.Title,
 		Progress:  "moving to plan",
 		UpdatedAt: time.Now(),
-	})
+	}); err != nil {
+		log.Warn().Err(err).Str("agent", pctx.AgentCfg.ID).Msg("clarify: state write failed")
+	}
 
 	return domain.PhaseResult{Done: true}
 }

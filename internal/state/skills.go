@@ -144,12 +144,14 @@ func (s *SkillStore) Load(role string) (*SkillSet, error) {
 		return nil, fmt.Errorf("skills: invalid role: %w", err)
 	}
 
-	s.mu.RLock()
+	// Use a single Lock for the entire load-from-disk-and-cache path to prevent
+	// concurrent loaders from overwriting a fresher cache entry with stale data (#58).
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if cached, ok := s.cache[role]; ok {
-		s.mu.RUnlock()
 		return cached, nil
 	}
-	s.mu.RUnlock()
 
 	path := filepath.Join(s.dir, role+".json")
 	data, err := os.ReadFile(path)
@@ -165,10 +167,7 @@ func (s *SkillStore) Load(role string) (*SkillSet, error) {
 		return nil, fmt.Errorf("skills: parse %s: %w", role, err)
 	}
 
-	s.mu.Lock()
 	s.cache[role] = &ss
-	s.mu.Unlock()
-
 	return &ss, nil
 }
 

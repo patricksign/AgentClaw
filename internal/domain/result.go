@@ -12,11 +12,12 @@ type TaskResult struct {
 	TaskID       string     `json:"task_id"`
 	Output       string     `json:"output"`
 	Artifacts    []Artifact `json:"artifacts"`
-	InputTokens  int64      `json:"input_tokens"`
-	OutputTokens int64      `json:"output_tokens"`
-	CostUSD      float64    `json:"cost_usd"`
-	DurationMs   int64      `json:"duration_ms"`
-	ModelUsed    string     `json:"model_used"`
+	InputTokens    int64      `json:"input_tokens"`
+	OutputTokens   int64      `json:"output_tokens"`
+	ThinkingTokens int64      `json:"thinking_tokens,omitempty"`
+	CostUSD        float64    `json:"cost_usd"`
+	DurationMs     int64      `json:"duration_ms"`
+	ModelUsed      string     `json:"model_used"`
 }
 
 // PhaseResult is the outcome of a single execution phase.

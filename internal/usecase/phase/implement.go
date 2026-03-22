@@ -7,6 +7,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
 )
 
 // ImplementPhase executes the approved plan by calling the agent's LLM.
@@ -36,7 +37,11 @@ func (p *ImplementPhase) Run(ctx context.Context, pctx PhaseContext) domain.Phas
 
 	start := time.Now()
 
-	// 3. Call LLM — use full context timeout (no additional override).
+	// 3. Call LLM with timeout. Implementation may need longer than 60s
+	// for large outputs, so use 120s.
+	implCtx, implCancel := context.WithTimeout(ctx, 120*time.Second)
+	defer implCancel()
+
 	implReq := port.LLMRequest{
 		Model:     pctx.AgentCfg.Model,
 		System:    systemPrompt,
@@ -50,7 +55,8 @@ func (p *ImplementPhase) Run(ctx context.Context, pctx PhaseContext) domain.Phas
 			TTL:         domain.CacheTTLForContent("system"),
 		}
 	}
-	resp, err := pctx.Router.Call(ctx, implReq)
+	implReq = reasoning.WithThinking(implReq, domain.PhaseImplement, task.Complexity)
+	resp, err := pctx.Router.Call(implCtx, implReq)
 	if err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("implement: LLM call: %w", err)}
 	}
@@ -70,13 +76,14 @@ func (p *ImplementPhase) Run(ctx context.Context, pctx PhaseContext) domain.Phas
 	}
 
 	result := &domain.TaskResult{
-		TaskID:       task.ID,
-		Output:       resp.Content,
-		InputTokens:  resp.InputTokens,
-		OutputTokens: resp.OutputTokens,
-		CostUSD:      resp.CostUSD,
-		DurationMs:   durationMs,
-		ModelUsed:    resp.ModelUsed,
+		TaskID:         task.ID,
+		Output:         resp.Content,
+		InputTokens:    resp.InputTokens,
+		OutputTokens:   resp.OutputTokens,
+		ThinkingTokens: resp.ThinkingTokens,
+		CostUSD:        resp.CostUSD,
+		DurationMs:     durationMs,
+		ModelUsed:      resp.ModelUsed,
 	}
 
 	// 6. Dispatch task done event.

@@ -95,6 +95,11 @@ func (ss *ScopeStore) Write(m ScopeManifest) error {
 		return fmt.Errorf("state: scope: marshal manifest for %q: %w", m.AgentID, err)
 	}
 
+	// Hold the lock across file I/O + cache update to prevent TOCTOU
+	// when concurrent Write() calls target the same AgentID (#58).
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
 	tmp := filepath.Join(ss.dir, m.AgentID+".tmp.json")
 	dst := filepath.Join(ss.dir, m.AgentID+".json")
 
@@ -107,9 +112,7 @@ func (ss *ScopeStore) Write(m ScopeManifest) error {
 		return fmt.Errorf("state: scope: rename tmp file for %q: %w", m.AgentID, err)
 	}
 
-	ss.mu.Lock()
 	ss.cache[m.AgentID] = m
-	ss.mu.Unlock()
 
 	return nil
 }

@@ -189,6 +189,9 @@ func (p *Pool) StatusAll() map[string]adapter.Status {
 	defer p.mu.Unlock()
 	out := make(map[string]adapter.Status, len(p.agents))
 	for id, a := range p.agents {
+		if a == nil {
+			continue // nil sentinel from killLocked
+		}
 		out[id] = a.Status()
 	}
 	return out
@@ -240,6 +243,9 @@ func (p *Pool) ShutdownAll(ctx context.Context) {
 	p.mu.Unlock()
 
 	for id, a := range agents {
+		if a == nil {
+			continue // nil sentinel from killLocked
+		}
 		a.OnShutdown(ctx)
 		log.Info().Str("agent", id).Msg("shutdown: agent stopped")
 	}
@@ -252,6 +258,9 @@ func (p *Pool) GetByRole(role string) []adapter.Agent {
 	defer p.mu.Unlock()
 	var idle, busy []adapter.Agent
 	for _, a := range p.agents {
+		if a == nil {
+			continue // nil sentinel from killLocked
+		}
 		if a.Config().Role != role {
 			continue
 		}

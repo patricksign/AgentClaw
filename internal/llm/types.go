@@ -25,25 +25,34 @@ type CacheControl struct {
 	TTL string `json:"ttl,omitempty"`
 }
 
+// ThinkingConfig controls extended thinking (chain-of-thought reasoning).
+type ThinkingConfig struct {
+	Enabled      bool `json:"enabled"`
+	BudgetTokens int  `json:"budget_tokens"`
+}
+
 type Request struct {
-	Model        string        `json:"model"` // "opus"|"sonnet"|"haiku"|"minimax"|"kimi"|"glm5"|"glm-flash"
-	System       string        `json:"system,omitempty"`
-	Messages     []Message     `json:"messages"`
-	MaxTokens    int           `json:"max_tokens"`
-	TaskID       string        `json:"-"`                       // for logging only
-	CacheControl *CacheControl `json:"cache_control,omitempty"` // prompt caching (Anthropic only)
-	BatchMode    bool          `json:"batch_mode,omitempty"`    // use batch API (async, 50% cheaper)
+	Model        string          `json:"model"` // "opus"|"sonnet"|"haiku"|"minimax"|"kimi"|"glm5"|"glm-flash"
+	System       string          `json:"system,omitempty"`
+	Messages     []Message       `json:"messages"`
+	MaxTokens    int             `json:"max_tokens"`
+	TaskID       string          `json:"-"`                       // for logging only
+	CacheControl *CacheControl   `json:"cache_control,omitempty"` // prompt caching (Anthropic only)
+	BatchMode    bool            `json:"batch_mode,omitempty"`    // use batch API (async, 50% cheaper)
+	Thinking     *ThinkingConfig `json:"thinking,omitempty"`      // extended thinking (Anthropic only)
 }
 
 type Response struct {
-	Content      string   `json:"content"`
-	InputTokens  int64    `json:"input_tokens"`
-	OutputTokens int64    `json:"output_tokens"`
-	CacheTokens  int64    `json:"cache_tokens,omitempty"` // tokens served from cache
-	CostUSD      float64  `json:"cost_usd"`
-	CostMode     CostMode `json:"cost_mode,omitempty"` // pricing mode used
-	ModelUsed    string   `json:"model_used"`
-	DurationMs   int64    `json:"duration_ms"`
+	Content         string   `json:"content"`
+	ThinkingContent string   `json:"thinking_content,omitempty"` // model's reasoning trace
+	InputTokens     int64    `json:"input_tokens"`
+	OutputTokens    int64    `json:"output_tokens"`
+	ThinkingTokens  int64    `json:"thinking_tokens,omitempty"` // tokens consumed by thinking
+	CacheTokens     int64    `json:"cache_tokens,omitempty"`    // tokens served from cache
+	CostUSD         float64  `json:"cost_usd"`
+	CostMode        CostMode `json:"cost_mode,omitempty"` // pricing mode used
+	ModelUsed       string   `json:"model_used"`
+	DurationMs      int64    `json:"duration_ms"`
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────

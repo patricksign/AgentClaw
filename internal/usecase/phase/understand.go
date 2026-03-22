@@ -8,6 +8,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
 )
 
 const understandSystem = `You are a senior engineer. Analyze the task and return ONLY compact JSON (no whitespace, no markdown fences):
@@ -60,7 +61,7 @@ func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint
 	})
 
 	// 4. Call LLM with 60s timeout.
-	out, err := p.callWithRetry(ctx, pctx.Router, pctx.AgentCfg.Model, task.ID, userMsg)
+	out, err := p.callWithRetry(ctx, pctx.Router, pctx.AgentCfg.Model, task.ID, userMsg, task.Complexity)
 	if err != nil {
 		return domain.PhaseResult{Err: fmt.Errorf("understand: %w", err)}
 	}
@@ -112,7 +113,7 @@ func (p *UnderstandPhase) Run(ctx context.Context, pctx PhaseContext, checkpoint
 }
 
 // callWithRetry calls the LLM once; on JSON parse failure retries once.
-func (p *UnderstandPhase) callWithRetry(ctx context.Context, router port.LLMRouter, model, taskID, userMsg string) (*understandOutput, error) {
+func (p *UnderstandPhase) callWithRetry(ctx context.Context, router port.LLMRouter, model, taskID, userMsg, complexity string) (*understandOutput, error) {
 	for attempt := range 2 {
 		callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		req := port.LLMRequest{
@@ -122,6 +123,7 @@ func (p *UnderstandPhase) callWithRetry(ctx context.Context, router port.LLMRout
 			MaxTokens: 2048,
 			TaskID:    taskID,
 		}
+		req = reasoning.WithThinking(req, domain.PhaseUnderstand, complexity)
 		if domain.SupportsPromptCache(model) {
 			req.CacheControl = &port.LLMCacheControl{
 				CacheSystem: true,

@@ -53,6 +53,7 @@ func NewParallelOrchestrator(
 
 // SetMaxConcurrency overrides the default concurrency limit.
 // Values <= 0 are treated as unlimited.
+// Must be called before Run — not safe for concurrent use (#58).
 func (p *ParallelOrchestrator) SetMaxConcurrency(n int) {
 	p.maxConcurrency = n
 }

@@ -39,23 +39,32 @@ func saveCheckpoint(pctx PhaseContext, taskID string, phase domain.ExecutionPhas
 
 // loadCheckpoint retrieves a previously saved checkpoint for a task.
 // Returns nil if no checkpoint exists or if CheckpointStore is nil.
+// Logs a warning on transient errors — silent failure means task restarts from scratch.
 func loadCheckpoint(pctx PhaseContext, taskID string) *domain.PhaseCheckpoint {
 	if pctx.CheckpointStore == nil {
 		return nil
 	}
 	cp, err := pctx.CheckpointStore.Load(taskID)
 	if err != nil {
+		log.Warn().Err(err).
+			Str("task", taskID).
+			Msg("checkpoint load failed — task will restart from scratch")
 		return nil
 	}
 	return cp
 }
 
 // deleteCheckpoint removes the checkpoint for a task after successful completion.
+// Logs a warning on failure — stale checkpoints may cause incorrect resume behavior.
 func deleteCheckpoint(pctx PhaseContext, taskID string) {
 	if pctx.CheckpointStore == nil {
 		return
 	}
-	_ = pctx.CheckpointStore.Delete(taskID)
+	if err := pctx.CheckpointStore.Delete(taskID); err != nil {
+		log.Warn().Err(err).
+			Str("task", taskID).
+			Msg("checkpoint delete failed — stale checkpoint may remain")
+	}
 }
 
 // dispatchEvent fires an event via the notifier in a goroutine (non-blocking).

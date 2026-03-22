@@ -8,7 +8,10 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/textutil"
 	"github.com/patricksign/AgentClaw/internal/usecase/phase"
+	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
+	"github.com/rs/zerolog/log"
 )
 
 const reviewSystem = `Review this implementation output for quality, correctness,
@@ -65,16 +68,17 @@ func (l *LoopOrchestrator) Run(
 
 		// Step 2 — Opus quality review.
 		reviewMsg := fmt.Sprintf("Task: %s\n\nOutput (first 2000 chars):\n%s\n\nImplementation Plan:\n%s",
-			task.Title, truncate(result.Output, 2000*4), task.ImplementPlan)
+			task.Title, textutil.Truncate(result.Output, 2000*4), task.ImplementPlan)
 
 		reviewCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		reviewResp, err := l.router.Call(reviewCtx, port.LLMRequest{
+		loopReviewReq := reasoning.WithThinking(port.LLMRequest{
 			Model:     domain.ModelOpus,
 			System:    reviewSystem,
 			Messages:  []port.LLMMessage{{Role: "user", Content: reviewMsg}},
 			MaxTokens: 2048,
 			TaskID:    task.ID,
-		})
+		}, domain.PhasePlan, task.Complexity)
+		reviewResp, err := l.router.Call(reviewCtx, loopReviewReq)
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("loop attempt %d: %s review: %w", attempt, domain.ModelOpus, err)
@@ -84,13 +88,15 @@ func (l *LoopOrchestrator) Run(
 
 		// APPROVED — done.
 		if strings.HasPrefix(strings.ToUpper(verdict), "APPROVED") {
-			_ = l.notifier.Dispatch(ctx, domain.Event{
+			if err := l.notifier.Dispatch(ctx, domain.Event{
 				Type:       domain.EventTaskDone,
 				Channel:    domain.StatusChannel,
 				TaskID:     task.ID,
 				Payload:    map[string]string{"message": fmt.Sprintf("Loop approved on attempt %d", attempt)},
 				OccurredAt: time.Now(),
-			})
+			}); err != nil {
+				log.Warn().Err(err).Str("task", task.ID).Msg("loop: done notification failed")
+			}
 			return result, nil
 		}
 
@@ -112,13 +118,15 @@ func (l *LoopOrchestrator) Run(
 			}
 		}
 
-		_ = l.notifier.Dispatch(ctx, domain.Event{
+		if err := l.notifier.Dispatch(ctx, domain.Event{
 			Type:       domain.EventPhaseTransition,
 			Channel:    domain.StatusChannel,
 			TaskID:     task.ID,
 			Payload:    map[string]string{"message": fmt.Sprintf("Output needs improvement — attempt %d/%d", attempt, l.maxLoops)},
 			OccurredAt: time.Now(),
-		})
+		}); err != nil {
+			log.Warn().Err(err).Str("task", task.ID).Msg("loop: transition notification failed")
+		}
 	}
 
 	return nil, fmt.Errorf("output not approved after %d attempts", l.maxLoops)

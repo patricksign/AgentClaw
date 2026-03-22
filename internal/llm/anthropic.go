@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // ─── Anthropic (custom protocol) ─────────────────────────────────────────────
@@ -21,11 +22,27 @@ func (r *Router) callAnthropic(ctx context.Context, req Request, p llmProvider) 
 	}
 
 	modelID := p.ModelID
+	// When extended thinking is enabled, max_tokens must exceed budget_tokens.
+	maxTokens := req.MaxTokens
+	thinkingEnabled := req.Thinking != nil && req.Thinking.Enabled && req.Thinking.BudgetTokens > 0
+	if thinkingEnabled && maxTokens <= req.Thinking.BudgetTokens {
+		maxTokens = req.Thinking.BudgetTokens + req.MaxTokens
+	}
+
 	body := map[string]any{
 		"model":      modelID,
-		"max_tokens": req.MaxTokens,
+		"max_tokens": maxTokens,
 		"messages":   req.Messages,
 	}
+
+	// Extended thinking: instruct the model to reason before answering.
+	if thinkingEnabled {
+		body["thinking"] = map[string]any{
+			"type":          "enabled",
+			"budget_tokens": req.Thinking.BudgetTokens,
+		}
+	}
+
 	if req.System != "" {
 		if req.CacheControl != nil && req.CacheControl.CacheSystem {
 			ttl := req.CacheControl.TTL
@@ -80,7 +97,9 @@ func (r *Router) callAnthropic(ctx context.Context, req Request, p llmProvider) 
 
 	var out struct {
 		Content []struct {
-			Text string `json:"text"`
+			Type     string `json:"type"`     // "text" or "thinking"
+			Text     string `json:"text"`     // present when type=="text"
+			Thinking string `json:"thinking"` // present when type=="thinking"
 		} `json:"content"`
 		Usage struct {
 			Input         int64 `json:"input_tokens"`
@@ -93,9 +112,29 @@ func (r *Router) callAnthropic(ctx context.Context, req Request, p llmProvider) 
 		return nil, fmt.Errorf("parse anthropic response: %w", err)
 	}
 
-	content := ""
-	if len(out.Content) > 0 {
-		content = out.Content[0].Text
+	// Separate thinking blocks from text blocks. Concatenate multiple blocks
+	// of the same type to avoid silently discarding content.
+	var contentParts, thinkingParts []string
+	for _, block := range out.Content {
+		switch block.Type {
+		case "thinking":
+			if block.Thinking != "" {
+				thinkingParts = append(thinkingParts, block.Thinking)
+			}
+		case "text", "":
+			if block.Text != "" {
+				contentParts = append(contentParts, block.Text)
+			}
+		}
+	}
+	content := strings.Join(contentParts, "\n")
+	thinkingContent := strings.Join(thinkingParts, "\n")
+
+	// Estimate thinking tokens from content byte length (bytes / 4 approximation).
+	// Avoids rune-slice allocation for large thinking outputs.
+	var thinkingTokens int64
+	if thinkingContent != "" {
+		thinkingTokens = int64(len(thinkingContent)) / 4
 	}
 
 	cacheTokens := out.Usage.CacheRead + out.Usage.CacheCreation
@@ -109,11 +148,13 @@ func (r *Router) callAnthropic(ctx context.Context, req Request, p llmProvider) 
 	}
 
 	return &Response{
-		Content:      content,
-		InputTokens:  out.Usage.Input,
-		OutputTokens: out.Usage.Output,
-		CacheTokens:  cacheTokens,
-		CostMode:     costMode,
-		ModelUsed:    req.Model,
+		Content:         content,
+		ThinkingContent: thinkingContent,
+		InputTokens:     out.Usage.Input,
+		OutputTokens:    out.Usage.Output,
+		ThinkingTokens:  thinkingTokens,
+		CacheTokens:     cacheTokens,
+		CostMode:        costMode,
+		ModelUsed:       req.Model,
 	}, nil
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/rs/zerolog/log"
 )
 
 // Chain implements port.Escalator using a multi-level resolution strategy:
@@ -94,7 +95,9 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 
 			// Clear checkpoint — question resolved.
 			if c.checkpoint != nil {
-				_ = c.checkpoint.Delete(req.TaskID)
+				if err := c.checkpoint.Delete(req.TaskID); err != nil {
+				log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: checkpoint delete failed")
+			}
 			}
 
 			c.dispatch(ctx, domain.EventEscalated, domain.StatusChannel, req, map[string]string{
@@ -122,7 +125,9 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 				"escalation_path": strings.Join(chain, " → "),
 			},
 		}
-		_ = c.checkpoint.Save(cp)
+		if err := c.checkpoint.Save(cp); err != nil {
+				log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: checkpoint save failed")
+			}
 	}
 
 	msgID, err := c.asker.AskHuman(ctx, req.AgentModel, req.TaskID, "", req.QuestionID, req.Question)
@@ -148,7 +153,9 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 
 		// Clear checkpoint — human answered.
 		if c.checkpoint != nil {
-			_ = c.checkpoint.Delete(req.TaskID)
+			if err := c.checkpoint.Delete(req.TaskID); err != nil {
+				log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: checkpoint delete failed")
+			}
 		}
 
 		return domain.EscalationResult{Answer: answer, AnsweredBy: domain.ModelHuman, Resolved: true}, nil
@@ -190,14 +197,16 @@ func (c *Chain) tryAt(ctx context.Context, level, question, taskContext, taskID 
 
 // dispatch is a convenience helper for firing events.
 func (c *Chain) dispatch(ctx context.Context, evtType domain.EventType, ch domain.Channel, req port.EscalatorRequest, payload map[string]string) {
-	_ = c.notifier.Dispatch(ctx, domain.Event{
+	if err := c.notifier.Dispatch(ctx, domain.Event{
 		Type:       evtType,
 		Channel:    ch,
 		TaskID:     req.TaskID,
 		AgentRole:  req.AgentRole,
 		Payload:    payload,
 		OccurredAt: time.Now(),
-	})
+	}); err != nil {
+		log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: notification failed")
+	}
 }
 
 // truncate returns the first n runes of s, appending "…" if truncated.

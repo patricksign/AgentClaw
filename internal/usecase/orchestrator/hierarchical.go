@@ -6,11 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
+	"github.com/patricksign/AgentClaw/internal/textutil"
+	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
 )
 
 const breakdownSystem = `Break down this task into subtasks for specialist agents.
@@ -62,22 +63,23 @@ func (h *HierarchicalOrchestrator) Run(
 	// ── Step 1: Opus breakdown ──────────────────────────────────────────────
 
 	userMsg := fmt.Sprintf("Task: %s\n\nDescription: %s\n\nProject context:\n%s",
-		parentTask.Title, parentTask.Description, truncate(mem.ProjectDoc, 600*4))
+		parentTask.Title, parentTask.Description, textutil.Truncate(mem.ProjectDoc, 600*4))
 
 	breakdownCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	resp, err := h.router.Call(breakdownCtx, port.LLMRequest{
+	breakdownReq := reasoning.WithThinking(port.LLMRequest{
 		Model:     domain.ModelOpus,
 		System:    breakdownSystem,
 		Messages:  []port.LLMMessage{{Role: "user", Content: userMsg}},
 		MaxTokens: 4096,
 		TaskID:    parentTask.ID,
-	})
+	}, domain.PhasePlan, parentTask.Complexity)
+	resp, err := h.router.Call(breakdownCtx, breakdownReq)
 	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("hierarchical: %s breakdown: %w", domain.ModelOpus, err)
 	}
 
-	raw := stripMarkdownFences(resp.Content)
+	raw := textutil.StripMarkdownFences(resp.Content)
 	var subtaskDefs []subtaskDef
 	if err := json.Unmarshal([]byte(raw), &subtaskDefs); err != nil {
 		return nil, fmt.Errorf("hierarchical: parse breakdown JSON: %w", err)
@@ -95,19 +97,20 @@ func (h *HierarchicalOrchestrator) Run(
 	assignMsg := fmt.Sprintf("Subtasks:\n%s\n\nAgent context:\n%s", subtasksJSON, mem.AgentDoc)
 
 	assignCtx, assignCancel := context.WithTimeout(ctx, 60*time.Second)
-	assignResp, err := h.router.Call(assignCtx, port.LLMRequest{
+	assignReq := reasoning.WithThinking(port.LLMRequest{
 		Model:     domain.ModelSonnet,
 		System:    assignSystem,
 		Messages:  []port.LLMMessage{{Role: "user", Content: assignMsg}},
 		MaxTokens: 4096,
 		TaskID:    parentTask.ID,
-	})
+	}, domain.PhasePlan, parentTask.Complexity)
+	assignResp, err := h.router.Call(assignCtx, assignReq)
 	assignCancel()
 	if err != nil {
 		return nil, fmt.Errorf("hierarchical: %s assign: %w", domain.ModelSonnet, err)
 	}
 
-	assignRaw := stripMarkdownFences(assignResp.Content)
+	assignRaw := textutil.StripMarkdownFences(assignResp.Content)
 	var confirmed []subtaskDef
 	if err := json.Unmarshal([]byte(assignRaw), &confirmed); err != nil {
 		// Fall back to original breakdown if Sonnet fails to parse.
@@ -141,14 +144,6 @@ func (h *HierarchicalOrchestrator) Run(
 	return parallelOrch.Run(ctx, tasks, mem)
 }
 
-// truncate returns the first n characters of s, appending "…" if truncated.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 // generateID returns a random 16-byte hex string as a task ID.
 // Uses crypto/rand for uniqueness without external dependencies.
 func generateID() string {
@@ -157,16 +152,4 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-// stripMarkdownFences removes ```json ... ``` wrappers from LLM output.
-func stripMarkdownFences(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-	}
-	return strings.TrimSpace(s)
-}
+

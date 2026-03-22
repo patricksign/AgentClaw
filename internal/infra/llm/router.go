@@ -50,20 +50,30 @@ func (r *Router) Call(ctx context.Context, req port.LLMRequest) (*port.LLMRespon
 		}
 	}
 
+	// Map thinking config from port to core types.
+	if req.Thinking != nil {
+		coreReq.Thinking = &llmcore.ThinkingConfig{
+			Enabled:      req.Thinking.Enabled,
+			BudgetTokens: req.Thinking.BudgetTokens,
+		}
+	}
+
 	resp, err := r.core.Call(ctx, coreReq)
 	if err != nil {
 		return nil, err
 	}
 
 	return &port.LLMResponse{
-		Content:      resp.Content,
-		InputTokens:  resp.InputTokens,
-		OutputTokens: resp.OutputTokens,
-		CacheTokens:  resp.CacheTokens,
-		CostUSD:      resp.CostUSD,
-		CostMode:     string(resp.CostMode),
-		DurationMs:   resp.DurationMs,
-		ModelUsed:    resp.ModelUsed,
+		Content:         resp.Content,
+		ThinkingContent: resp.ThinkingContent,
+		InputTokens:     resp.InputTokens,
+		OutputTokens:    resp.OutputTokens,
+		ThinkingTokens:  resp.ThinkingTokens,
+		CacheTokens:     resp.CacheTokens,
+		CostUSD:         resp.CostUSD,
+		CostMode:        string(resp.CostMode),
+		DurationMs:      resp.DurationMs,
+		ModelUsed:       resp.ModelUsed,
 	}, nil
 }
 
