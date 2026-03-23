@@ -3,6 +3,7 @@ package summarizer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/llm"
-	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -66,10 +66,7 @@ func (s *Summarizer) CompressAgentHistory(ctx context.Context, agentID, role str
 		return 0, 0, fmt.Errorf("summarizer: load tasks for %s: %w", role, err)
 	}
 	if len(tasks) < minTasksRequired {
-		log.Debug().
-			Str("agent", agentID).
-			Int("tasks", len(tasks)).
-			Msg("summarizer: not enough tasks, skipping")
+		slog.Debug("summarizer: not enough tasks, skipping", "agent", agentID, "tasks", len(tasks))
 		return 0, 0, nil
 	}
 
@@ -94,23 +91,17 @@ func (s *Summarizer) CompressAgentHistory(ctx context.Context, agentID, role str
 
 	if err := s.archiveTasks(agentID, tasks, userMsg); err != nil {
 		// Non-fatal: log and continue.
-		log.Warn().Err(err).Str("agent", agentID).Msg("summarizer: archive failed")
+		slog.Warn("summarizer: archive failed", "err", err, "agent", agentID)
 	}
 
 	if err := s.store.LogTokenUsage(
 		"summarizer-"+agentID, agentID, summaryModel,
 		resp.InputTokens, resp.OutputTokens, resp.CostUSD, resp.DurationMs,
 	); err != nil {
-		log.Warn().Err(err).Str("agent", agentID).Msg("summarizer: log tokens failed")
+		slog.Warn("summarizer: log tokens failed", "err", err, "agent", agentID)
 	}
 
-	log.Info().
-		Str("agent", agentID).
-		Int64("input_tokens", resp.InputTokens).
-		Int64("output_tokens", resp.OutputTokens).
-		Float64("cost_usd", resp.CostUSD).
-		Int("summary_length", len(summary)).
-		Msg("summarizer: compressed agent history")
+	slog.Info("summarizer: compressed agent history", "agent", agentID, "input_tokens", resp.InputTokens, "output_tokens", resp.OutputTokens, "cost_usd", resp.CostUSD, "summary_length", len(summary))
 
 	return resp.CostUSD, len(summary), nil
 }
@@ -122,12 +113,12 @@ func (s *Summarizer) CompressAll(ctx context.Context, agents []domain.AgentConfi
 	for _, cfg := range agents {
 		cost, _, err := s.CompressAgentHistory(ctx, cfg.ID, cfg.Role)
 		if err != nil {
-			log.Error().Err(err).Str("agent", cfg.ID).Msg("summarizer: CompressAll error")
+			slog.Error("summarizer: CompressAll error", "err", err, "agent", cfg.ID)
 			return totalCost, fmt.Errorf("summarizer: compress %s: %w", cfg.ID, err)
 		}
 		totalCost += cost
 	}
-	log.Info().Float64("total_cost_usd", totalCost).Msg("summarizer: CompressAll done")
+	slog.Info("summarizer: CompressAll done", "total_cost_usd", totalCost)
 	return totalCost, nil
 }
 

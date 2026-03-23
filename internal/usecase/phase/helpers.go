@@ -3,12 +3,12 @@ package phase
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
 )
 
 // notifyTimeout caps how long a fire-and-forget notification goroutine can run.
@@ -30,10 +30,7 @@ func saveCheckpoint(pctx PhaseContext, taskID string, phase domain.ExecutionPhas
 		SuspendedModel: pctx.AgentCfg.Model,
 	}
 	if err := pctx.CheckpointStore.Save(cp); err != nil {
-		log.Warn().Err(err).
-			Str("task", taskID).
-			Str("phase", string(phase)).
-			Msg("checkpoint save failed — task may not be resumable after crash")
+		slog.Warn("checkpoint save failed — task may not be resumable after crash", "err", err, "task", taskID, "phase", string(phase))
 	}
 }
 
@@ -46,9 +43,7 @@ func loadCheckpoint(pctx PhaseContext, taskID string) *domain.PhaseCheckpoint {
 	}
 	cp, err := pctx.CheckpointStore.Load(taskID)
 	if err != nil {
-		log.Warn().Err(err).
-			Str("task", taskID).
-			Msg("checkpoint load failed — task will restart from scratch")
+		slog.Warn("checkpoint load failed — task will restart from scratch", "err", err, "task", taskID)
 		return nil
 	}
 	return cp
@@ -61,9 +56,7 @@ func deleteCheckpoint(pctx PhaseContext, taskID string) {
 		return
 	}
 	if err := pctx.CheckpointStore.Delete(taskID); err != nil {
-		log.Warn().Err(err).
-			Str("task", taskID).
-			Msg("checkpoint delete failed — stale checkpoint may remain")
+		slog.Warn("checkpoint delete failed — stale checkpoint may remain", "err", err, "task", taskID)
 	}
 }
 
@@ -78,10 +71,7 @@ func dispatchEvent(_ context.Context, notifier port.Notifier, evt domain.Event) 
 		notifyCtx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 		defer cancel()
 		if err := notifier.Dispatch(notifyCtx, evt); err != nil {
-			log.Warn().Err(err).
-				Str("event", string(evt.Type)).
-				Str("task", evt.TaskID).
-				Msg("async notification failed")
+			slog.Warn("async notification failed", "err", err, "event", string(evt.Type), "task", evt.TaskID)
 		}
 	}()
 }
@@ -95,10 +85,7 @@ func dispatchCritical(ctx context.Context, notifier port.Notifier, evt domain.Ev
 		evt.OccurredAt = time.Now()
 	}
 	if err := notifier.Dispatch(ctx, evt); err != nil {
-		log.Error().Err(err).
-			Str("event", string(evt.Type)).
-			Str("task", evt.TaskID).
-			Msg("critical notification failed")
+		slog.Error("critical notification failed", "err", err, "event", string(evt.Type), "task", evt.TaskID)
 		return fmt.Errorf("critical notification (%s) failed: %w", evt.Type, err)
 	}
 	return nil

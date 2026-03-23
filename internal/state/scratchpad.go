@@ -3,14 +3,13 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 // maxScratchpadEntries is the number of entries kept in the live file before
@@ -88,7 +87,7 @@ func (s *Scratchpad) AddEntry(entry ScratchpadEntry) error {
 		entries = entries[len(entries)-maxScratchpadEntries:]
 		if aerr := s.archive(overflow); aerr != nil {
 			// E-2: log so operators are aware of dropped entries.
-			log.Warn().Err(aerr).Msg("scratchpad: archive failed, entries dropped")
+			slog.Warn("scratchpad: archive failed, entries dropped", "err", aerr)
 		}
 	}
 

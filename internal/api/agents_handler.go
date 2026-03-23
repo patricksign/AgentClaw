@@ -2,24 +2,26 @@ package api
 
 import (
 	"crypto/subtle"
-	"net/http"
+	"errors"
+	"log/slog"
 	"os"
+	"sort"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 	"github.com/patricksign/AgentClaw/internal/adapter"
 )
 
-func (s *Server) HandlerAgent(mux *http.ServeMux) {
-	// Agents
-	mux.HandleFunc("GET /api/agents", cors(s.handleAgents))
-	mux.HandleFunc("POST /api/agents/{id}/restart", cors(s.handleRestartAgent))
-	mux.HandleFunc("POST /api/agents/{id}/kill", cors(s.handleKillAgent))
+func (s *Server) HandlerAgent(c fiber.Router) {
+	GET(c, "/agents", s.handleAgents)
+	POST(c, "/agents/:id/restart", s.handleRestartAgent)
+	POST(c, "/agents/:id/kill", s.handleKillAgent)
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
 // GET /api/agents — list all agents + status
-func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-	// Method already enforced by mux pattern "GET /api/agents".
+func (s *Server) handleAgents(r *fiber.Ctx) error {
 	statuses := s.pool.StatusAll()
 	type agentInfo struct {
 		ID     string         `json:"id"`
@@ -29,54 +31,53 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	for id, st := range statuses {
 		out = append(out, agentInfo{ID: id, Status: st})
 	}
-	writeJSON(w, 200, out)
+	// Sort by ID for deterministic API response.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return common.ResponseApiStatusCode(r, fiber.StatusOK, out, nil)
 }
 
 // requireAdminTokenFromReq checks the X-Admin-Token header against the ADMIN_TOKEN env var.
-// Returns true if authorised (or no token is configured). Writes 401 and returns false otherwise.
-func requireAdminTokenFromReq(w http.ResponseWriter, r *http.Request) bool {
+// Returns false (denied) when ADMIN_TOKEN is not set — secure by default.
+func requireAdminTokenFromReq(r *fiber.Ctx) bool {
 	adminToken := os.Getenv("ADMIN_TOKEN")
 	if adminToken == "" {
-		return true
+		slog.Warn("ADMIN_TOKEN not set — admin endpoint denied by default")
+		return false
 	}
-	got := r.Header.Get("X-Admin-Token")
+	got := r.Get("X-Admin-Token")
 	if subtle.ConstantTimeCompare([]byte(got), []byte(adminToken)) != 1 {
-		errJSON(w, http.StatusUnauthorized, "unauthorized — X-Admin-Token required")
+		slog.Warn("unauthorized admin request — invalid X-Admin-Token")
 		return false
 	}
 	return true
 }
 
 // POST /api/agents/{id}/restart — restart agent (requires admin token)
-func (s *Server) handleRestartAgent(w http.ResponseWriter, r *http.Request) {
-	if !requireAdminTokenFromReq(w, r) {
-		return
+func (s *Server) handleRestartAgent(r *fiber.Ctx) error {
+	if !requireAdminTokenFromReq(r) {
+		return common.ResponseApiStatusCode(r, fiber.StatusUnauthorized, nil, errors.New("unauthorized"))
 	}
-	id := r.PathValue("id")
+	id := r.Params("id")
 	if id == "" {
-		errJSON(w, http.StatusBadRequest, "missing agent id")
-		return
+		return common.ResponseApiBadRequest(r, nil, errors.New("missing agent id"))
 	}
 	if err := s.pool.Restart(id); err != nil {
-		errJSON(w, http.StatusBadRequest, err.Error())
-		return
+		return common.ResponseApiBadRequest(r, nil, err)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "restarted"})
+	return common.ResponseApiOK(r, map[string]string{"status": "restarted"}, nil)
 }
 
 // POST /api/agents/{id}/kill — kill agent (requires admin token)
-func (s *Server) handleKillAgent(w http.ResponseWriter, r *http.Request) {
-	if !requireAdminTokenFromReq(w, r) {
-		return
+func (s *Server) handleKillAgent(r *fiber.Ctx) error {
+	if !requireAdminTokenFromReq(r) {
+		return common.ResponseApiStatusCode(r, fiber.StatusUnauthorized, nil, errors.New("unauthorized"))
 	}
-	id := r.PathValue("id")
+	id := r.Params("id")
 	if id == "" {
-		errJSON(w, http.StatusBadRequest, "missing agent id")
-		return
+		return common.ResponseApiBadRequest(r, nil, errors.New("missing agent id"))
 	}
 	if err := s.pool.Kill(id); err != nil {
-		errJSON(w, http.StatusBadRequest, err.Error())
-		return
+		return common.ResponseApiBadRequest(r, nil, err)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "killed"})
+	return common.ResponseApiOK(r, map[string]string{"status": "killed"}, nil)
 }

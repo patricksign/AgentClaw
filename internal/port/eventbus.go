@@ -16,4 +16,7 @@ type DomainEventBus interface {
 	// Returns an unsubscribe function.
 	// Handler is called in a dedicated goroutine per event.
 	Subscribe(subscriberID string, eventTypes []domain.EventType, handler EventHandler) func()
+
+	// Stop marks the bus as closed and waits for all in-flight handlers to complete.
+	Stop()
 }

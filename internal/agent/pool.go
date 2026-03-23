@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/patricksign/AgentClaw/internal/adapter"
-	"github.com/rs/zerolog/log"
 )
 
 // deepCopyConfig returns a Config with independently copied slice and map fields
@@ -79,7 +80,7 @@ func (p *Pool) Spawn(a adapter.Agent) error {
 		AgentID:   id,
 		Timestamp: time.Now(),
 	})
-	log.Info().Str("agent", id).Str("role", a.Config().Role).Msg("agent spawned")
+	slog.Info("agent spawned", "agent", id, "role", a.Config().Role)
 	return nil
 }
 
@@ -127,7 +128,7 @@ func (p *Pool) killLocked(id string) error {
 		AgentID:   id,
 		Timestamp: time.Now(),
 	})
-	log.Info().Str("agent", id).Msg("agent killed")
+	slog.Info("agent killed", "agent", id)
 	return nil
 }
 
@@ -161,7 +162,7 @@ func (p *Pool) Restart(id string) error {
 		AgentID:   id,
 		Timestamp: time.Now(),
 	})
-	log.Info().Str("agent", id).Msg("agent restarted")
+	slog.Info("agent restarted", "agent", id)
 	return nil
 }
 
@@ -230,7 +231,7 @@ func (p *Pool) ShutdownAll(ctx context.Context) {
 		select {
 		case <-done:
 		case <-ctx.Done():
-			log.Warn().Str("agent", id).Msg("shutdown: supervisor did not exit in time")
+			slog.Warn("shutdown: supervisor did not exit in time", "agent", id)
 		}
 	}
 
@@ -247,7 +248,7 @@ func (p *Pool) ShutdownAll(ctx context.Context) {
 			continue // nil sentinel from killLocked
 		}
 		a.OnShutdown(ctx)
-		log.Info().Str("agent", id).Msg("shutdown: agent stopped")
+		slog.Info("shutdown: agent stopped", "agent", id)
 	}
 }
 
@@ -317,10 +318,10 @@ func (p *Pool) supervise(id string, stop <-chan struct{}, done chan struct{}) {
 			}
 
 			if a.Status() == adapter.StatusFailed {
-				log.Warn().Str("agent", id).Msg("agent failed, restarting...")
+				slog.Warn("agent failed, restarting...", "agent", id)
 				newStop, newDone, err := p.restartFromSupervisor(id)
 				if err != nil {
-					log.Error().Err(err).Str("agent", id).Msg("restart failed")
+					slog.Error("restart failed", "err", err, "agent", id)
 					return
 				}
 				// Hand off to the new agent's channels and continue the loop.
@@ -335,7 +336,7 @@ func (p *Pool) supervise(id string, stop <-chan struct{}, done chan struct{}) {
 			cancel()
 
 			if !healthy {
-				log.Warn().Str("agent", id).Msg("health check failed")
+				slog.Warn("health check failed", "agent", id)
 				p.bus.Publish(adapter.Event{
 					Type:      adapter.EvtAgentFailed,
 					AgentID:   id,
@@ -392,7 +393,7 @@ func (p *Pool) restartFromSupervisor(id string) (newStop <-chan struct{}, newDon
 		AgentID:   id,
 		Timestamp: time.Now(),
 	})
-	log.Info().Str("agent", id).Msg("agent restarted (from supervisor)")
+	slog.Info("agent restarted (from supervisor)", "agent", id)
 
 	return stop, done, nil
 }

@@ -6,7 +6,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // NotificationSubscriber listens for domain events and fans out
@@ -62,11 +62,7 @@ func (ns *NotificationSubscriber) handle(evt domain.Event) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := notifier.Dispatch(ctx, evt); err != nil {
-				log.Warn().
-					Err(err).
-					Str("event_type", string(evt.Type)).
-					Str("task_id", evt.TaskID).
-					Msg("notification-subscriber: dispatch failed")
+				slog.Warn("notification-subscriber: dispatch failed", "err", err, "event_type", string(evt.Type), "task_id", evt.TaskID)
 			}
 		}(n)
 	}

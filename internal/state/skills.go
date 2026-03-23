@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -11,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -229,7 +228,7 @@ func (s *SkillStore) LoadRelevant(q SkillQuery) ([]Skill, error) {
 		if sk.DetailFile != "" {
 			body, rerr := s.loadDetail(sk.DetailFile)
 			if rerr != nil {
-				log.Warn().Err(rerr).Str("skill", sk.ID).Msg("skills: load detail failed, using summary")
+				slog.Warn("skills: load detail failed, using summary", "err", rerr, "skill", sk.ID)
 			} else {
 				sk.Description = body
 			}
@@ -388,7 +387,7 @@ func (s *SkillStore) Save(ss *SkillSet) error {
 		archPath := filepath.Join(s.previousDir, archName)
 		if data, rerr := os.ReadFile(indexPath); rerr == nil {
 			if werr := os.WriteFile(archPath, data, 0640); werr != nil {
-				log.Warn().Err(werr).Str("role", ss.Role).Msg("skills: archive failed")
+				slog.Warn("skills: archive failed", "err", werr, "role", ss.Role)
 			}
 		}
 	}
@@ -729,7 +728,7 @@ func (s *SkillStore) BuildSkillContextForTask(q SkillQuery) string {
 	// ── Section 2: Detailed skills (multi-part buffer load) ──────────────
 	relevant, loadErr := s.LoadRelevant(q)
 	if loadErr != nil {
-		log.Warn().Err(loadErr).Str("role", q.Role).Msg("skills: LoadRelevant failed")
+		slog.Warn("skills: LoadRelevant failed", "err", loadErr, "role", q.Role)
 	}
 
 	// Filter to only skills that have meaningful detail beyond the summary.

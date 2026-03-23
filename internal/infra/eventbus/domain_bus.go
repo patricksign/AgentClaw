@@ -6,7 +6,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // Compile-time check.
@@ -80,11 +80,7 @@ func (b *InProcessDomainBus) Publish(evt domain.Event) {
 				<-b.sem // release slot
 				b.wg.Done()
 				if r := recover(); r != nil {
-					log.Error().
-						Str("subscriber", name).
-						Str("event_type", string(evt.Type)).
-						Interface("panic", r).
-						Msg("eventbus: subscriber panicked")
+					slog.Error("eventbus: subscriber panicked", "subscriber", name, "event_type", string(evt.Type), "panic", r)
 				}
 			}()
 			h(evt)

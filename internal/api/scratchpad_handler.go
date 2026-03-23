@@ -1,98 +1,76 @@
 package api
 
 import (
-	"net/http"
+	"errors"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 	"github.com/patricksign/AgentClaw/internal/state"
 )
 
-func (s *Server) HandlerScratchpad(mux *http.ServeMux) {
-	// Scratchpad
-	mux.HandleFunc("GET /api/scratchpad", cors(s.getScratchpad))
-	mux.HandleFunc("POST /api/scratchpad", cors(s.createScratchpad))
+func (s *Server) HandlerScratchpad(c fiber.Router) {
+	GET(c, "/scratchpad", s.getScratchpad)
+	POST(c, "/scratchpad", s.createScratchpad)
 }
 
 // ─── Scratchpad ───────────────────────────────────────────────────────────────
 
-// GET  /api/scratchpad — returns {markdown, entries}
-func (s *Server) getScratchpad(w http.ResponseWriter, r *http.Request) {
+// GET /api/scratchpad
+func (s *Server) getScratchpad(c *fiber.Ctx) error {
 	if s.scratchpad == nil {
-		errJSON(w, http.StatusServiceUnavailable, "scratchpad not configured")
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusServiceUnavailable, nil, errors.New("scratchpad not configured"))
 	}
-
-	switch r.Method {
-	case http.MethodGet:
-		entries, err := s.scratchpad.Read()
-		if err != nil {
-			errJSON(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if entries == nil {
-			entries = []state.ScratchpadEntry{}
-		}
-		// Read raw markdown from file for human consumption.
-		md, merr := s.scratchpad.ReadForContext()
-		if merr != nil {
-			md = ""
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"markdown": md,
-			"entries":  entries,
-		})
-	default:
-		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	entries, err := s.scratchpad.Read()
+	if err != nil {
+		return common.ResponseApiStatusCode(c, fiber.StatusInternalServerError, nil, err)
 	}
+	if entries == nil {
+		entries = []state.ScratchpadEntry{}
+	}
+	md, merr := s.scratchpad.ReadForContext()
+	if merr != nil {
+		md = ""
+	}
+	return common.ResponseApiOK(c, map[string]any{
+		"markdown": md,
+		"entries":  entries,
+	}, nil)
 }
 
-// ─── Scratchpad ───────────────────────────────────────────────────────────────
-
-// POST /api/scratchpad — adds a manual entry {agent_id, kind, message, task_id}
-func (s *Server) createScratchpad(w http.ResponseWriter, r *http.Request) {
+// POST /api/scratchpad
+func (s *Server) createScratchpad(c *fiber.Ctx) error {
 	if s.scratchpad == nil {
-		errJSON(w, http.StatusServiceUnavailable, "scratchpad not configured")
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusServiceUnavailable, nil, errors.New("scratchpad not configured"))
 	}
-
-	switch r.Method {
-	case http.MethodPost:
-		var req struct {
-			AgentID string               `json:"agent_id"`
-			Kind    state.ScratchpadKind `json:"kind"`
-			Message string               `json:"message"`
-			TaskID  string               `json:"task_id"`
-		}
-		if err := readJSON(r, &req); err != nil {
-			errJSON(w, http.StatusBadRequest, "invalid JSON")
-			return
-		}
-		if req.AgentID == "" || req.Message == "" {
-			errJSON(w, http.StatusBadRequest, "agent_id and message required")
-			return
-		}
-		switch req.Kind {
-		case state.KindInProgress, state.KindBlocked, state.KindDecision,
-			state.KindHandoff, state.KindWarning:
-			// valid
-		default:
-			errJSON(w, http.StatusBadRequest, "kind must be one of: in_progress, blocked, decision, handoff, warning")
-			return
-		}
-		entry := state.ScratchpadEntry{
-			AgentID:   req.AgentID,
-			Kind:      req.Kind,
-			Message:   req.Message,
-			TaskID:    req.TaskID,
-			Timestamp: time.Now(),
-		}
-		if err := s.scratchpad.AddEntry(entry); err != nil {
-			errJSON(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusCreated, entry)
-
+	var req struct {
+		AgentID string               `json:"agent_id"`
+		Kind    state.ScratchpadKind `json:"kind"`
+		Message string               `json:"message"`
+		TaskID  string               `json:"task_id"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return common.ResponseApiBadRequest(c, nil, errors.New("invalid JSON"))
+	}
+	if req.AgentID == "" || req.Message == "" {
+		return common.ResponseApiBadRequest(c, nil, errors.New("agent_id and message required"))
+	}
+	switch req.Kind {
+	case state.KindInProgress, state.KindBlocked, state.KindDecision,
+		state.KindHandoff, state.KindWarning:
+		// valid
 	default:
-		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return common.ResponseApiBadRequest(c, nil, errors.New("kind must be one of: in_progress, blocked, decision, handoff, warning"))
 	}
+	entry := state.ScratchpadEntry{
+		AgentID:   req.AgentID,
+		Kind:      req.Kind,
+		Message:   req.Message,
+		TaskID:    req.TaskID,
+		Timestamp: time.Now(),
+	}
+	if err := s.scratchpad.AddEntry(entry); err != nil {
+		return common.ResponseApiStatusCode(c, fiber.StatusInternalServerError, nil, err)
+	}
+	return common.ResponseApiStatusCode(c, fiber.StatusCreated, entry, nil)
 }

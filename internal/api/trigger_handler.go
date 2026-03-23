@@ -1,75 +1,57 @@
 package api
 
 import (
-	"net/http"
+	"errors"
+	"log/slog"
 
-	"github.com/rs/zerolog/log"
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 )
 
-// maxConcurrentPipelines limits how many trigger pipelines can run simultaneously.
-// Each pipeline makes multiple LLM calls and can run for minutes.
-const maxConcurrentPipelines = 5
-
-// pipelineSem is a counting semaphore that limits concurrent pipeline executions.
-var pipelineSem = make(chan struct{}, maxConcurrentPipelines)
-
-func (s *Server) HandlerTrigger(mux *http.ServeMux) {
-	// Trigger pipeline
-	mux.HandleFunc("POST /api/trigger", cors(s.handleTrigger))
+func (s *Server) HandlerTrigger(c fiber.Router) {
+	POST(c, "/trigger", s.handleTrigger)
 }
 
 // ─── Trigger ─────────────────────────────────────────────────────────────────
 
 // POST /api/trigger
-// Body: {"workspace_id":"<board_id>","ticket_id":"<card_id_or_shortlink>"}
-// Returns 202 Accepted immediately; the agent pipeline runs in the background.
-func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
+func (s *Server) handleTrigger(c *fiber.Ctx) error {
 	var req struct {
 		WorkspaceID string `json:"workspace_id"`
 		TicketID    string `json:"ticket_id"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		errJSON(w, http.StatusBadRequest, "invalid JSON")
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return common.ResponseApiBadRequest(c, nil, errors.New("invalid JSON"))
 	}
 	if req.WorkspaceID == "" || req.TicketID == "" {
-		errJSON(w, http.StatusBadRequest, "workspace_id and ticket_id are required")
-		return
+		return common.ResponseApiBadRequest(c, nil, errors.New("workspace_id and ticket_id are required"))
 	}
 
-	if s.triggerSvc == nil || !s.triggerSvc.IsConfigured() {
-		errJSON(w, http.StatusServiceUnavailable, "Trello integration not configured (TRELLO_KEY/TRELLO_TOKEN missing)")
-		return
+	svc := s.GetTriggerService()
+	if svc == nil || !svc.IsConfigured() {
+		return common.ResponseApiStatusCode(c, fiber.StatusServiceUnavailable, nil, errors.New("Trello integration not configured (TRELLO_KEY/TRELLO_TOKEN missing)"))
 	}
 
 	// Acquire semaphore slot — reject if at capacity.
-	// Must happen BEFORE writing 202 to avoid double HTTP response.
 	select {
-	case pipelineSem <- struct{}{}:
+	case s.pipelineSem <- struct{}{}:
 	default:
-		errJSON(w, http.StatusTooManyRequests, "too many concurrent pipelines, try again later")
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusTooManyRequests, nil, errors.New("too many concurrent pipelines, try again later"))
 	}
 
-	// Return 202 only after semaphore acquired successfully.
-	writeJSON(w, http.StatusAccepted, map[string]string{
+	// Track goroutine in wg so Shutdown() waits for in-flight pipelines (#62).
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.pipelineSem }()
+		if err := svc.Run(s.Context(), req.WorkspaceID, req.TicketID); err != nil {
+			slog.Error("trigger pipeline failed", "err", err, "workspace_id", req.WorkspaceID, "ticket_id", req.TicketID)
+		}
+	}()
+
+	return common.ResponseApiStatusCode(c, fiber.StatusAccepted, map[string]string{
 		"status":       "accepted",
 		"workspace_id": req.WorkspaceID,
 		"ticket_id":    req.TicketID,
-	})
-
-	go func() {
-		defer func() { <-pipelineSem }()
-		if err := s.triggerSvc.Run(s.ctx, req.WorkspaceID, req.TicketID); err != nil {
-			log.Error().Err(err).
-				Str("workspace_id", req.WorkspaceID).
-				Str("ticket_id", req.TicketID).
-				Msg("trigger pipeline failed")
-		}
-	}()
+	}, nil)
 }

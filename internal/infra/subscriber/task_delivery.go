@@ -6,7 +6,7 @@ import (
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // TaskDeliverySubscriber listens for EventTaskSubmitted and pushes the task
@@ -39,14 +39,11 @@ func (tds *TaskDeliverySubscriber) Stop() {
 // handle receives a task.submitted event and pushes the task into the queue.
 func (tds *TaskDeliverySubscriber) handle(evt domain.Event) {
 	if tds.queue == nil {
-		log.Warn().Str("task_id", evt.TaskID).Msg("task-delivery: queue is nil — cannot dispatch")
+		slog.Warn("task-delivery: queue is nil — cannot dispatch", "task_id", evt.TaskID)
 		return
 	}
 
-	log.Info().
-		Str("task_id", evt.TaskID).
-		Str("agent_role", evt.AgentRole).
-		Msg("task-delivery: received task.submitted — pushing to queue")
+	slog.Info("task-delivery: received task.submitted — pushing to queue", "task_id", evt.TaskID, "agent_role", evt.AgentRole)
 
 	// Convert domain event payload back to adapter.Task for the legacy queue.
 	task := &adapter.Task{

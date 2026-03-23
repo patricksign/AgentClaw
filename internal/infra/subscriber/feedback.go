@@ -6,7 +6,7 @@ import (
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // FeedbackSubscriber listens for question/escalation events and routes them
@@ -59,10 +59,6 @@ func (fs *FeedbackSubscriber) handle(evt domain.Event) {
 
 	_, err := fs.asker.AskHuman(ctx, evt.AgentID, evt.TaskID, taskTitle, questionID, question)
 	if err != nil {
-		log.Warn().
-			Err(err).
-			Str("task_id", evt.TaskID).
-			Str("event_type", string(evt.Type)).
-			Msg("feedback-subscriber: AskHuman failed")
+		slog.Warn("feedback-subscriber: AskHuman failed", "err", err, "task_id", evt.TaskID, "event_type", string(evt.Type))
 	}
 }

@@ -1,12 +1,14 @@
 package api
 
 import (
-	"crypto/subtle"
-	"net/http"
-	"os"
+	"context"
+	"errors"
+	"log/slog"
+	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 	"github.com/patricksign/AgentClaw/internal/domain"
-	"github.com/rs/zerolog/log"
 )
 
 // knownRoles is the canonical set of agent roles used when compress-all is requested.
@@ -17,70 +19,64 @@ var knownRoles = []string{
 }
 
 // HandlerState registers the state management endpoints.
-func (s *Server) HandlerState(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/state/compress", cors(s.compressState))
+func (s *Server) HandlerState(c fiber.Router) {
+	POST(c, "/state/compress", s.compressState)
 }
 
-func (s *Server) compressState(w http.ResponseWriter, r *http.Request) {
-	if s.summarizer == nil {
-		errJSON(w, http.StatusServiceUnavailable, "summarizer not configured")
-		return
+func (s *Server) compressState(c *fiber.Ctx) error {
+	sum := s.GetSummarizer()
+	if sum == nil {
+		return common.ResponseApiStatusCode(c, fiber.StatusServiceUnavailable, nil, errors.New("summarizer not configured"))
 	}
 
-	// Require the admin token when ADMIN_TOKEN env var is set.
-	if adminToken := os.Getenv("ADMIN_TOKEN"); adminToken != "" {
-		got := r.Header.Get("X-Admin-Token")
-		// Constant-time comparison prevents timing side-channel attacks.
-		if subtle.ConstantTimeCompare([]byte(got), []byte(adminToken)) != 1 {
-			errJSON(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
+	// Admin token required — deny by default when ADMIN_TOKEN is not set.
+	if !requireAdminTokenFromReq(c) {
+		return common.ResponseApiStatusCode(c, fiber.StatusUnauthorized, nil, errors.New("unauthorized"))
 	}
 
 	var req struct {
 		AgentID string `json:"agent_id"`
 		Role    string `json:"role"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		errJSON(w, http.StatusBadRequest, "invalid JSON")
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return common.ResponseApiBadRequest(c, nil, errors.New("invalid JSON"))
 	}
 
-	ctx := r.Context()
+	// Use a dedicated context with timeout — NOT c.Context() which is recycled
+	// after the handler returns (fasthttp pool). CompressAll can be long-running.
+	ctx, cancel := context.WithTimeout(s.Context(), 10*time.Minute)
+	defer cancel()
+
 	var totalCost float64
 	var totalLen int
 
 	if req.AgentID == "" {
-		// Compress all known roles.
 		configs := make([]domain.AgentConfig, 0, len(knownRoles))
 		for _, role := range knownRoles {
 			configs = append(configs, domain.AgentConfig{ID: role, Role: role})
 		}
-		cost, err := s.summarizer.CompressAll(ctx, configs)
+		cost, err := sum.CompressAll(ctx, configs)
 		if err != nil {
-			log.Error().Err(err).Msg("compressState: CompressAll failed")
-			errJSON(w, http.StatusInternalServerError, "internal summarizer error")
-			return
+			slog.Error("compressState: CompressAll failed", "err", err)
+			return common.ResponseApiStatusCode(c, fiber.StatusInternalServerError, nil, errors.New("internal summarizer error"))
 		}
 		totalCost = cost
 	} else {
-		// Use role from request; fall back to agent_id if role omitted.
 		role := req.Role
 		if role == "" {
 			role = req.AgentID
 		}
-		cost, length, err := s.summarizer.CompressAgentHistory(ctx, req.AgentID, role)
+		cost, length, err := sum.CompressAgentHistory(ctx, req.AgentID, role)
 		if err != nil {
-			log.Error().Err(err).Str("agent_id", req.AgentID).Msg("compressState: CompressAgentHistory failed")
-			errJSON(w, http.StatusInternalServerError, "internal summarizer error")
-			return
+			slog.Error("compressState: CompressAgentHistory failed", "err", err, "agent_id", req.AgentID)
+			return common.ResponseApiStatusCode(c, fiber.StatusInternalServerError, nil, errors.New("internal summarizer error"))
 		}
 		totalCost = cost
 		totalLen = length
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return common.ResponseApiOK(c, map[string]any{
 		"cost_usd":       totalCost,
 		"summary_length": totalLen,
-	})
+	}, nil)
 }

@@ -1,84 +1,65 @@
 package api
 
 import (
-	"net/http"
+	"errors"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 	"github.com/patricksign/AgentClaw/internal/state"
 )
 
-func (s *Server) HandlerResolved(mux *http.ServeMux) {
-
-	// Resolved error pattern store
-	mux.HandleFunc("GET /api/state/resolved", cors(s.getHandleResolved))
-	mux.HandleFunc("GET /api/state/resolved/{id}", cors(s.handleResolvedItemById))
-	mux.HandleFunc("PATCH /api/state/resolved/{id}/resolve", cors(s.updateResolvedItemById))
+func (s *Server) HandlerResolved(c fiber.Router) {
+	GET(c, "/state/resolved", s.getHandleResolved)
+	GET(c, "/api/state/resolved/:id", s.handleResolvedItemById)
+	PUT(c, "/api/state/resolved/:id/resolve", s.updateResolvedItemById)
 }
 
 // ─── Resolved error patterns ─────────────────────────────────────────────────
 
 // GET /api/state/resolved
-// Returns all ErrorPattern entries sorted by occurrence_count desc.
-func (s *Server) getHandleResolved(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+func (s *Server) getHandleResolved(c *fiber.Ctx) error {
 	if s.resolved == nil {
-		writeJSON(w, http.StatusOK, []state.ErrorPattern{})
-		return
+		return common.ResponseApiOK(c, []state.ErrorPattern{}, nil)
 	}
 	patterns, err := s.resolved.LoadAll()
 	if err != nil {
-		errJSON(w, http.StatusInternalServerError, err.Error())
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusInternalServerError, nil, err)
 	}
 	if patterns == nil {
 		patterns = []state.ErrorPattern{}
 	}
-	writeJSON(w, http.StatusOK, patterns)
+	return common.ResponseApiOK(c, patterns, nil)
 }
 
-// handleResolvedItem handles:
-//
-//	GET   /api/state/resolved/:id          — return full detail file content
-//	PATCH /api/state/resolved/:id/resolve  — mark as resolved
-func (s *Server) handleResolvedItemById(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+// GET /api/state/resolved/:id
+func (s *Server) handleResolvedItemById(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if !isValidResolvedID(id) {
-		errJSON(w, http.StatusBadRequest, "invalid pattern id")
-		return
+		return common.ResponseApiBadRequest(c, nil, errors.New("invalid pattern id"))
 	}
 	if s.resolved == nil {
-		errJSON(w, http.StatusServiceUnavailable, "resolved store not configured")
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusServiceUnavailable, nil, errors.New("resolved store not configured"))
 	}
 	detail, err := s.resolved.LoadDetail(id)
 	if err != nil {
-		errJSON(w, http.StatusNotFound, err.Error())
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusNotFound, nil, err)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "detail": detail})
+	return common.ResponseApiOK(c, map[string]string{"id": id, "detail": detail}, nil)
 }
 
-// handleResolvedItem handles:
-//
-//	GET   /api/state/resolved/:id          — return full detail file content
-//	PATCH /api/state/resolved/:id/resolve  — mark as resolved
-func (s *Server) updateResolvedItemById(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+// PUT /api/state/resolved/:id/resolve
+func (s *Server) updateResolvedItemById(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if !isValidResolvedID(id) {
-		errJSON(w, http.StatusBadRequest, "invalid pattern id")
-		return
+		return common.ResponseApiBadRequest(c, nil, errors.New("invalid pattern id"))
 	}
 	if s.resolved == nil {
-		errJSON(w, http.StatusServiceUnavailable, "resolved store not configured")
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusServiceUnavailable, nil, errors.New("resolved store not configured"))
 	}
 	if err := s.resolved.MarkResolved(id); err != nil {
-		errJSON(w, http.StatusNotFound, err.Error())
-		return
+		return common.ResponseApiStatusCode(c, fiber.StatusNotFound, nil, err)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	return common.ResponseApiOK(c, map[string]string{"status": "resolved"}, nil)
 }
 
 // isValidResolvedID reports whether id is a valid 6-hex-character pattern ID.
@@ -86,8 +67,8 @@ func isValidResolvedID(id string) bool {
 	if len(id) != 6 {
 		return false
 	}
-	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+	for _, ch := range id {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
 			return false
 		}
 	}

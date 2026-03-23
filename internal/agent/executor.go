@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/state"
-	"github.com/rs/zerolog/log"
 )
 
 // MemoryStore interface — avoids circular import with the memory package.
@@ -95,7 +96,7 @@ func (e *Executor) ResumeTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("ResumeTask: queue not configured")
 	}
 	e.queue.Push(task)
-	log.Info().Str("task", taskID).Msg("ResumeTask: task re-queued after answer")
+	slog.Info("ResumeTask: task re-queued after answer", "task", taskID)
 	return nil
 }
 
@@ -132,7 +133,7 @@ func (e *Executor) RecoverSuspendedTasks(ctx context.Context, tg suspendedNotifi
 				if !e.replyStore.HasPending(taskID) {
 					msgID, askErr := tg.NotifyResumeAfterRestart(ctx, taskID, taskTitle, q.Text, phaseStartedAt.Format(time.RFC3339))
 					if askErr != nil {
-						log.Warn().Err(askErr).Str("task", taskID).Msg("RecoverSuspendedTasks: re-notify failed")
+						slog.Warn("RecoverSuspendedTasks: re-notify failed", "err", askErr, "task", taskID)
 						continue
 					}
 					// Re-register so the reply can be routed.
@@ -142,7 +143,7 @@ func (e *Executor) RecoverSuspendedTasks(ctx context.Context, tg suspendedNotifi
 		}
 
 		e.queue.Push(task)
-		log.Info().Str("task", taskID).Msg("RecoverSuspendedTasks: re-queued suspended task")
+		slog.Info("RecoverSuspendedTasks: re-queued suspended task", "task", taskID)
 	}
 	return nil
 }
@@ -171,11 +172,10 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 	a := candidates[0]
 	agentID := a.Config().ID
 
-	log.Info().
-		Str("task", taskID).
-		Str("agent", agentID).
-		Str("model", a.Config().Model).
-		Msg("executing task")
+	slog.Info("executing task",
+		"task", taskID,
+		"agent", agentID,
+		"model", a.Config().Model)
 
 	// Atomically update task fields before handing off to the agent.
 	now := time.Now()
@@ -188,7 +188,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 	// SaveTask does INSERT OR REPLACE which includes the status=running set above.
 	// No need for a separate UpdateTaskStatus call — avoids double DB write.
 	if err := e.mem.SaveTask(task); err != nil {
-		log.Error().Err(err).Str("task", taskID).Msg("SaveTask failed")
+		slog.Error("SaveTask failed", "err", err, "task", taskID)
 		return fmt.Errorf("execute: save task %s: %w", taskID, err)
 	}
 
@@ -242,7 +242,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 	// for human input (e.g. PhaseClarify). Do NOT mark as Done — leave status
 	// as TaskRunning so it can be resumed via ResumeTask.
 	if err == nil && result == nil {
-		log.Info().Str("task", taskID).Msg("task suspended (waiting for input)")
+		slog.Info("task suspended (waiting for input)", "task", taskID)
 		return nil
 	}
 
@@ -252,7 +252,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 		task.Unlock()
 
 		if dbErr := e.mem.UpdateTaskStatus(taskID, adapter.TaskFailed); dbErr != nil {
-			log.Error().Err(dbErr).Str("task", taskID).Msg("UpdateTaskStatus(failed) failed")
+			slog.Error("UpdateTaskStatus(failed) failed", "err", dbErr, "task", taskID)
 		}
 
 		// Check whether this error matches a known resolution pattern.
@@ -261,11 +261,10 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 		if rs := e.mem.Resolved(); rs != nil {
 			if matches, serr := rs.Search(err.Error(), taskRole); serr == nil && len(matches) > 0 {
 				best := matches[0]
-				log.Info().
-					Str("task", taskID).
-					Str("pattern_id", best.ID).
-					Str("resolution", best.ResolutionSummary).
-					Msg("known error pattern matched")
+				slog.Info("known error pattern matched",
+					"task", taskID,
+					"pattern_id", best.ID,
+					"resolution", best.ResolutionSummary)
 
 				hint := fmt.Sprintf("ERROR: %s\n\nKNOWN FIX: %s\nSee: %s",
 					err.Error(), best.ResolutionSummary, best.DetailFile)
@@ -307,11 +306,11 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 				Timestamp: time.Now(),
 			}
 			if applyErr := e.skillStore.ApplyReflection(failReflection); applyErr != nil {
-				log.Warn().Err(applyErr).Str("task", taskID).Msg("ApplyReflection(failure) failed")
+				slog.Warn("ApplyReflection(failure) failed", "err", applyErr, "task", taskID)
 			}
 		}
 
-		log.Error().Err(err).Str("task", taskID).Msg("task failed")
+		slog.Error("task failed", "err", err, "task", taskID)
 		return err
 	}
 
@@ -319,7 +318,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 	if result != nil {
 		addErr := e.mem.AddTokens(taskID, result.InputTokens, result.OutputTokens, result.CostUSD)
 		if addErr != nil {
-			log.Error().Err(addErr).Str("task", taskID).Msg("AddTokens failed")
+			slog.Error("AddTokens failed", "err", addErr, "task", taskID)
 		}
 		logErr := e.mem.LogTokenUsage(
 			taskID, agentID, a.Config().Model,
@@ -327,9 +326,9 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 			result.CostUSD, result.DurationMs,
 		)
 		if logErr != nil {
-			log.Error().Err(logErr).Str("task", taskID).Msg("LogTokenUsage failed")
+			slog.Error("LogTokenUsage failed", "err", logErr, "task", taskID)
 			if addErr == nil {
-				log.Warn().Str("task", taskID).Msg("token accounting inconsistent: AddTokens succeeded but LogTokenUsage failed")
+				slog.Warn("token accounting inconsistent: AddTokens succeeded but LogTokenUsage failed", "task", taskID)
 			}
 		}
 		e.bus.Publish(adapter.Event{
@@ -347,7 +346,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 	task.Unlock()
 
 	if err := e.mem.UpdateTaskStatus(taskID, adapter.TaskDone); err != nil {
-		log.Error().Err(err).Str("task", taskID).Msg("UpdateTaskStatus(done) failed")
+		slog.Error("UpdateTaskStatus(done) failed", "err", err, "task", taskID)
 	}
 
 	e.bus.Publish(adapter.Event{
@@ -358,11 +357,10 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 	})
 
 	if result != nil {
-		log.Info().
-			Str("task", taskID).
-			Float64("cost", result.CostUSD).
-			Int64("tokens", result.InputTokens+result.OutputTokens).
-			Msg("task done")
+		slog.Info("task done",
+			"task", taskID,
+			"cost", result.CostUSD,
+			"tokens", result.InputTokens+result.OutputTokens)
 	}
 
 	// Scratchpad: record handoff with next-role hint.
@@ -383,7 +381,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 		}
 		summary := fmt.Sprintf("**[%s] %s** — done (cost $%.4f)", taskID, taskTitle, cost)
 		if aerr := e.mem.AppendAgentDoc(taskRole, summary); aerr != nil {
-			log.Warn().Err(aerr).Str("task", taskID).Msg("AppendAgentDoc failed")
+			slog.Warn("AppendAgentDoc failed", "err", aerr, "task", taskID)
 		}
 	}
 
@@ -405,7 +403,7 @@ func (e *Executor) Execute(ctx context.Context, task *adapter.Task) error {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error().Interface("panic", r).Str("task", taskID).Msg("post-run hook panicked")
+						slog.Error("post-run hook panicked", "panic", r, "task", taskID)
 					}
 				}()
 				hook(ctx, a, task, &hookResult)

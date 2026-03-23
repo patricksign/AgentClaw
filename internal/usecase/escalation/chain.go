@@ -3,12 +3,12 @@ package escalation
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
 )
 
 // Chain implements port.Escalator using a multi-level resolution strategy:
@@ -96,7 +96,7 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 			// Clear checkpoint — question resolved.
 			if c.checkpoint != nil {
 				if err := c.checkpoint.Delete(req.TaskID); err != nil {
-				log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: checkpoint delete failed")
+				slog.Warn("escalation: checkpoint delete failed", "err", err, "task", req.TaskID)
 			}
 			}
 
@@ -126,7 +126,7 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 			},
 		}
 		if err := c.checkpoint.Save(cp); err != nil {
-				log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: checkpoint save failed")
+				slog.Warn("escalation: checkpoint save failed", "err", err, "task", req.TaskID)
 			}
 	}
 
@@ -154,7 +154,7 @@ func (c *Chain) Resolve(ctx context.Context, req port.EscalatorRequest) (domain.
 		// Clear checkpoint — human answered.
 		if c.checkpoint != nil {
 			if err := c.checkpoint.Delete(req.TaskID); err != nil {
-				log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: checkpoint delete failed")
+				slog.Warn("escalation: checkpoint delete failed", "err", err, "task", req.TaskID)
 			}
 		}
 
@@ -205,7 +205,7 @@ func (c *Chain) dispatch(ctx context.Context, evtType domain.EventType, ch domai
 		Payload:    payload,
 		OccurredAt: time.Now(),
 	}); err != nil {
-		log.Warn().Err(err).Str("task", req.TaskID).Msg("escalation: notification failed")
+		slog.Warn("escalation: notification failed", "err", err, "task", req.TaskID)
 	}
 }
 

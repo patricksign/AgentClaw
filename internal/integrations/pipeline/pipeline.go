@@ -43,7 +43,7 @@ import (
 	"github.com/patricksign/AgentClaw/internal/integrations/github"
 	"github.com/patricksign/AgentClaw/internal/integrations/trello"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // Service orchestrates the AgentClaw agent pipeline.
@@ -93,8 +93,6 @@ type pipelineTask struct {
 // All task submission goes through port.TaskDispatcher; results via port.TaskResultWaiter.
 // Notifications are event-driven: subscribers on DomainEventBus handle Telegram/Slack.
 func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
-	logger := log.With().Str("ticket_id", ticketID).Str("board_id", boardID).Logger()
-
 	if s.trello == nil || !s.trello.IsConfigured() {
 		return fmt.Errorf("pipeline: Trello client not configured")
 	}
@@ -106,15 +104,15 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 	})
 
 	// ── Step 1: Fetch card ────────────────────────────────────────────────────
-	logger.Info().Msg("pipeline: fetching Trello card")
+	slog.Info("pipeline: fetching Trello card", "ticket_id", ticketID, "board_id", boardID)
 	card, err := s.trello.GetCard(ctx, ticketID)
 	if err != nil {
 		return fmt.Errorf("pipeline: card not found: %w", err)
 	}
-	logger.Info().Str("card_id", card.ID).Str("name", card.Name).Msg("pipeline: card found")
+	slog.Info("pipeline: card found", "ticket_id", ticketID, "board_id", boardID, "card_id", card.ID, "name", card.Name)
 
 	// ── Step 2: Idea Agent ────────────────────────────────────────────────────
-	logger.Info().Msg("pipeline: step 2 — idea agent")
+	slog.Info("pipeline: step 2 — idea agent", "ticket_id", ticketID, "board_id", boardID)
 	ideaTask := &domain.Task{
 		ID:          "pipeline-idea-" + uuid.New().String()[:8],
 		Title:       card.Name,
@@ -128,21 +126,21 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 	if err != nil {
 		return fmt.Errorf("pipeline: idea agent: %w", err)
 	}
-	logger.Info().Str("task_id", ideaTask.ID).Msg("pipeline: idea agent complete")
+	slog.Info("pipeline: idea agent complete", "ticket_id", ticketID, "board_id", boardID, "task_id", ideaTask.ID)
 
 	// ── Step 3: Append concept to card description ────────────────────────────
-	logger.Info().Msg("pipeline: step 3 — appending concept to card")
+	slog.Info("pipeline: step 3 — appending concept to card", "ticket_id", ticketID, "board_id", boardID)
 	newDesc := card.Desc
 	if newDesc != "" {
 		newDesc += "\n\n---\n\n"
 	}
 	newDesc += "## AgentClaw Concept\n\n" + ideaOutput
 	if err := s.trello.UpdateCardDescription(ctx, card.ID, newDesc); err != nil {
-		logger.Warn().Err(err).Msg("pipeline: failed to update card description — continuing")
+		slog.Warn("pipeline: failed to update card description — continuing", "err", err, "ticket_id", ticketID, "board_id", boardID)
 	}
 
 	// ── Step 4: Breakdown Agent ───────────────────────────────────────────────
-	logger.Info().Msg("pipeline: step 4 — breakdown agent")
+	slog.Info("pipeline: step 4 — breakdown agent", "ticket_id", ticketID, "board_id", boardID)
 	breakdownTask := &domain.Task{
 		ID:          "pipeline-breakdown-" + uuid.New().String()[:8],
 		Title:       "Breakdown: " + card.Name,
@@ -161,10 +159,10 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 	if err != nil {
 		return fmt.Errorf("pipeline: parse task list: %w", err)
 	}
-	logger.Info().Int("tasks", len(tasks)).Msg("pipeline: breakdown tasks parsed")
+	slog.Info("pipeline: breakdown tasks parsed", "ticket_id", ticketID, "board_id", boardID, "tasks", len(tasks))
 
 	// ── Step 5: Checklist ─────────────────────────────────────────────────────
-	logger.Info().Msg("pipeline: step 5 — ensuring checklist")
+	slog.Info("pipeline: step 5 — ensuring checklist", "ticket_id", ticketID, "board_id", boardID)
 	checklist, err := s.trello.EnsureChecklist(ctx, card.ID)
 	if err != nil {
 		return fmt.Errorf("pipeline: ensure checklist: %w", err)
@@ -178,10 +176,10 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 	if err != nil {
 		return fmt.Errorf("pipeline: populate checklist: %w", err)
 	}
-	logger.Info().Int("items", len(itemIDs)).Msg("pipeline: checklist populated")
+	slog.Info("pipeline: checklist populated", "ticket_id", ticketID, "board_id", boardID, "items", len(itemIDs))
 
 	// ── Step 6: Execute tasks via event-driven dispatch ───────────────────────
-	logger.Info().Msg("pipeline: step 6 — dispatching tasks")
+	slog.Info("pipeline: step 6 — dispatching tasks", "ticket_id", ticketID, "board_id", boardID)
 	type taskEntry struct {
 		pt     pipelineTask
 		dTask  *domain.Task
@@ -209,16 +207,11 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 	for i, entry := range entries {
 		// Short-circuit if context is already cancelled (e.g., shutdown).
 		if ctx.Err() != nil {
-			logger.Info().Err(ctx.Err()).Msg("pipeline: context cancelled — stopping task dispatch")
+			slog.Info("pipeline: context cancelled — stopping task dispatch", "err", ctx.Err(), "ticket_id", ticketID, "board_id", boardID)
 			break
 		}
 
-		taskLogger := logger.With().
-			Str("task_id", entry.dTask.ID).
-			Str("role", entry.pt.Role).
-			Str("title", entry.pt.Title).
-			Logger()
-		taskLogger.Info().Msg("pipeline: dispatching task")
+		slog.Info("pipeline: dispatching task", "ticket_id", ticketID, "board_id", boardID, "task_id", entry.dTask.ID, "role", entry.pt.Role, "title", entry.pt.Title)
 
 		taskStart := time.Now()
 
@@ -230,7 +223,7 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 
 		output, taskErr := s.dispatchAndWait(ctx, entry.dTask)
 		if taskErr != nil {
-			taskLogger.Error().Err(taskErr).Msg("pipeline: task failed")
+			slog.Error("pipeline: task failed", "err", taskErr, "ticket_id", ticketID, "board_id", boardID, "task_id", entry.dTask.ID, "role", entry.pt.Role, "title", entry.pt.Title)
 			s.publishEvent(domain.EventTaskFailed, entry.dTask.ID, map[string]string{
 				"title":  entry.pt.Title,
 				"role":   entry.pt.Role,
@@ -240,11 +233,11 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 		}
 
 		durationMs := time.Since(taskStart).Milliseconds()
-		taskLogger.Info().Int64("duration_ms", durationMs).Msg("pipeline: task done")
+		slog.Info("pipeline: task done", "ticket_id", ticketID, "board_id", boardID, "task_id", entry.dTask.ID, "role", entry.pt.Role, "title", entry.pt.Title, "duration_ms", durationMs)
 
 		if entry.itemID != "" {
 			if cerr := s.trello.SetCheckItemState(ctx, card.ID, entry.itemID, true); cerr != nil {
-				taskLogger.Warn().Err(cerr).Msg("pipeline: failed to mark checklist item")
+				slog.Warn("pipeline: failed to mark checklist item", "err", cerr, "ticket_id", ticketID, "board_id", boardID, "task_id", entry.dTask.ID)
 			}
 		}
 
@@ -261,9 +254,9 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 			prBody := fmt.Sprintf("## Task\n%s\n\n## Output\n```\n%s\n```", entry.pt.Title, truncate(output, 1000))
 			pr, prErr := s.github.CreateFeaturePR(ctx, fmt.Sprintf("task-%d", i+1), entry.pt.Title, baseBranch, prBody)
 			if prErr != nil {
-				taskLogger.Warn().Err(prErr).Msg("pipeline: failed to create GitHub PR")
+				slog.Warn("pipeline: failed to create GitHub PR", "err", prErr, "ticket_id", ticketID, "board_id", boardID, "task_id", entry.dTask.ID)
 			} else {
-				taskLogger.Info().Str("pr_url", pr.HTMLURL).Int("pr_number", pr.Number).Msg("pipeline: PR created")
+				slog.Info("pipeline: PR created", "ticket_id", ticketID, "board_id", boardID, "task_id", entry.dTask.ID, "pr_url", pr.HTMLURL, "pr_number", pr.Number)
 				s.publishEvent(domain.EventPRCreated, entry.dTask.ID, map[string]string{
 					"pr_url":    pr.HTMLURL,
 					"pr_number": fmt.Sprintf("%d", pr.Number),
@@ -276,7 +269,7 @@ func (s *Service) Run(ctx context.Context, boardID, ticketID string) error {
 
 	// ── Step 7: Final event ──────────────────────────────────────────────────
 	total := len(tasks)
-	logger.Info().Int("done", doneCount).Int("total", total).Msg("pipeline: all tasks processed")
+	slog.Info("pipeline: all tasks processed", "ticket_id", ticketID, "board_id", boardID, "done", doneCount, "total", total)
 
 	if doneCount == total {
 		s.publishEvent(domain.EventPipelineCompleted, "", map[string]string{

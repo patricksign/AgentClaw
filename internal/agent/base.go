@@ -9,12 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/integrations/trello"
 	"github.com/patricksign/AgentClaw/internal/llm"
 	"github.com/patricksign/AgentClaw/internal/state"
-	"github.com/rs/zerolog/log"
 )
 
 // ─── BaseAgent ────────────────────────────────────────────────────────────────
@@ -237,14 +238,13 @@ func (a *BaseAgent) phaseImplement(ctx context.Context,
 		)
 	}
 
-	log.Info().
-		Str("agent", a.cfg.ID).
-		Str("role", a.cfg.Role).
-		Str("task", taskID).
-		Int64("input_tokens", resp.InputTokens).
-		Int64("output_tokens", resp.OutputTokens).
-		Float64("cost_usd", resp.CostUSD).
-		Msg("task completed")
+	slog.Info("task completed",
+		"agent", a.cfg.ID,
+		"role", a.cfg.Role,
+		"task", taskID,
+		"input_tokens", resp.InputTokens,
+		"output_tokens", resp.OutputTokens,
+		"cost_usd", resp.CostUSD)
 
 	// Post-task reflection: update skills and state for self-improvement.
 	a.reflectAndLearn(ctx, task, mem, result, true)
@@ -293,7 +293,7 @@ Be specific. Max 3 items per array.`
 
 	content, err := a.callModel(rCtx, reflectModel, reflectSystem, reflectUser, 512)
 	if err != nil {
-		log.Warn().Err(err).Str("task", taskID).Msg("reflectAndLearn: llm call failed")
+		slog.Warn("reflectAndLearn: llm call failed", "err", err, "task", taskID)
 		return
 	}
 
@@ -305,7 +305,7 @@ Be specific. Max 3 items per array.`
 	}
 	clean := stripMarkdownFences(content)
 	if err := json.Unmarshal([]byte(clean), &reflection); err != nil {
-		log.Warn().Err(err).Str("task", taskID).Msg("reflectAndLearn: parse failed")
+		slog.Warn("reflectAndLearn: parse failed", "err", err, "task", taskID)
 		return
 	}
 
@@ -342,16 +342,15 @@ Be specific. Max 3 items per array.`
 	}
 
 	if err := mem.SkillStore.ApplyReflection(postReflection); err != nil {
-		log.Warn().Err(err).Str("task", taskID).Msg("reflectAndLearn: apply reflection failed")
+		slog.Warn("reflectAndLearn: apply reflection failed", "err", err, "task", taskID)
 		return
 	}
 
-	log.Info().
-		Str("task", taskID).
-		Int("lessons", len(reflection.LessonsLearned)).
-		Int("patterns", len(reflection.NewPatterns)).
-		Int("anti_patterns", len(reflection.AntiPatterns)).
-		Msg("reflectAndLearn: skills updated")
+	slog.Info("reflectAndLearn: skills updated",
+		"task", taskID,
+		"lessons", len(reflection.LessonsLearned),
+		"patterns", len(reflection.NewPatterns),
+		"anti_patterns", len(reflection.AntiPatterns))
 }
 
 func (a *BaseAgent) HealthCheck(_ context.Context) bool {
@@ -360,7 +359,7 @@ func (a *BaseAgent) HealthCheck(_ context.Context) bool {
 
 func (a *BaseAgent) OnShutdown(_ context.Context) {
 	a.setStatus(adapter.StatusTerminated)
-	log.Info().Str("agent", a.cfg.ID).Msg("agent shutdown")
+	slog.Info("agent shutdown", "agent", a.cfg.ID)
 }
 
 // ─── System prompt builder ────────────────────────────────────────────────────
@@ -700,13 +699,11 @@ func TrelloBreakdownHook(client *trello.Client, listID string) PostRunHook {
 
 		tickets, err := trello.ParseTickets(result.Output)
 		if err != nil {
-			log.Error().Err(err).Str("agent", a.Config().ID).Str("task", task.ID).
-				Msg("failed to parse tickets from LLM output")
+			slog.Error("failed to parse tickets from LLM output", "err", err, "agent", a.Config().ID, "task", task.ID)
 			return
 		}
 
-		log.Info().Str("agent", a.Config().ID).Int("tickets", len(tickets)).
-			Msg("creating Trello cards")
+		slog.Info("creating Trello cards", "agent", a.Config().ID, "tickets", len(tickets))
 
 		for _, ticket := range tickets {
 			card, cerr := client.CreateCard(ctx, trello.Card{
@@ -715,11 +712,10 @@ func TrelloBreakdownHook(client *trello.Client, listID string) PostRunHook {
 				ListID:      listID,
 			})
 			if cerr != nil {
-				log.Error().Err(cerr).Str("title", ticket.Title).Msg("trello card creation failed")
+				slog.Error("trello card creation failed", "err", cerr, "title", ticket.Title)
 				continue
 			}
-			log.Info().Str("card", card.ID).Str("url", card.ShortURL).
-				Str("title", card.Name).Msg("trello card created")
+			slog.Info("trello card created", "card", card.ID, "url", card.ShortURL, "title", card.Name)
 
 			result.Artifacts = append(result.Artifacts, adapter.Artifact{
 				Kind: adapter.ArtifactTrello,

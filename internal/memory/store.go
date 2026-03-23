@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/rs/zerolog/log"
 
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/domain"
@@ -68,7 +69,7 @@ func (s *Store) ReadScratchpadContext() string {
 	}
 	ctx, err := s.scratchpad.ReadForContext()
 	if err != nil {
-		log.Warn().Err(err).Msg("ReadScratchpadContext failed")
+		slog.Warn("ReadScratchpadContext failed", "err", err)
 		return ""
 	}
 	return ctx
@@ -526,8 +527,7 @@ func enforceTokenBudget(ctx *adapter.MemoryContext, budget int) {
 	}
 
 	if excess > 0 {
-		log.Warn().Int("excess_tokens", excess).Int("budget", budget).
-			Msg("BuildContext: could not fit within token budget after trimming")
+		slog.Warn("BuildContext: could not fit within token budget after trimming", "excess_tokens", excess, "budget", budget)
 	}
 }
 

@@ -3,11 +3,11 @@ package phase
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
 )
 
 // ClarifyPhase resolves unresolved questions via the escalation chain.
@@ -55,7 +55,7 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 				TimeStuck: time.Since(task.PhaseStartedAt).String(),
 				UpdatedAt: time.Now(),
 			}); err != nil {
-				log.Warn().Err(err).Str("agent", pctx.AgentCfg.ID).Msg("clarify: state write failed")
+				slog.Warn("clarify: state write failed", "err", err, "agent", pctx.AgentCfg.ID)
 			}
 
 			dispatchEvent(ctx, pctx.Notifier, domain.Event{
@@ -109,7 +109,7 @@ func (p *ClarifyPhase) Run(ctx context.Context, pctx PhaseContext) domain.PhaseR
 		Progress:  "moving to plan",
 		UpdatedAt: time.Now(),
 	}); err != nil {
-		log.Warn().Err(err).Str("agent", pctx.AgentCfg.ID).Msg("clarify: state write failed")
+		slog.Warn("clarify: state write failed", "err", err, "agent", pctx.AgentCfg.ID)
 	}
 
 	return domain.PhaseResult{Done: true}

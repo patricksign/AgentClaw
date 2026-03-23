@@ -16,13 +16,14 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/google/uuid"
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/integrations/telegram"
 	"github.com/patricksign/AgentClaw/internal/llm"
 	"github.com/patricksign/AgentClaw/internal/state"
-	"github.com/rs/zerolog/log"
 )
 
 // maxRedirects is the maximum number of Opus plan rejections before a task is failed.
@@ -94,7 +95,7 @@ func (a *BaseAgent) saveTask(task *adapter.Task) {
 		return
 	}
 	if err := d.SaveTask(task); err != nil {
-		log.Error().Err(err).Str("task", task.ID).Msg("pre_executor: saveTask failed")
+		slog.Error("pre_executor: saveTask failed", "err", err, "task", task.ID)
 	}
 }
 
@@ -114,7 +115,7 @@ func (a *BaseAgent) phaseUnderstand(ctx context.Context, task *adapter.Task, mem
 		d.Telegram.NotifyUnderstandStart(ctx, a.cfg.ID, taskID, taskTitle)
 	}
 
-	log.Info().Str("agent", a.cfg.ID).Str("task", taskID).Msg("phase: understand — start")
+	slog.Info("phase: understand — start", "agent", a.cfg.ID, "task", taskID)
 
 	system := `You are a senior engineer. Before writing any code, you must fully understand the task.
 Analyze the task and return ONLY compact JSON (no whitespace, no markdown fences):
@@ -189,12 +190,11 @@ Return questions as empty array [] if everything is clear. Be specific.`
 
 	a.saveTask(task)
 
-	log.Info().
-		Str("agent", a.cfg.ID).
-		Str("task", taskID).
-		Str("next_phase", string(nextPhase)).
-		Int("questions", questionCount).
-		Msg("phase: understand — done")
+	slog.Info("phase: understand — done",
+		"agent", a.cfg.ID,
+		"task", taskID,
+		"next_phase", string(nextPhase),
+		"questions", questionCount)
 
 	if d != nil && d.Telegram != nil {
 		if questionCount == 0 {
@@ -273,7 +273,7 @@ func (a *BaseAgent) phaseClarify(ctx context.Context,
 				if d != nil && d.Telegram != nil {
 					d.Telegram.NotifyClarifyFromCache(ctx, taskID, q.Text, matches[0].OccurrenceCount)
 				}
-				log.Info().Str("task", taskID).Str("question", q.ID).Msg("phaseClarify: resolved from cache")
+				slog.Info("phaseClarify: resolved from cache", "task", taskID, "question", q.ID)
 				continue
 			}
 			if len(matches) > 0 && matches[0].OccurrenceCount == 1 {
@@ -300,7 +300,7 @@ func (a *BaseAgent) phaseClarify(ctx context.Context,
 			if d != nil && d.Telegram != nil {
 				d.Telegram.NotifyClarifyResolved(ctx, taskID, q.Text, level1)
 			}
-			log.Info().Str("task", taskID).Str("q", q.ID).Str("by", level1).Msg("phaseClarify: resolved at level1")
+			slog.Info("phaseClarify: resolved at level1", "task", taskID, "q", q.ID, "by", level1)
 			continue
 		}
 
@@ -323,7 +323,7 @@ func (a *BaseAgent) phaseClarify(ctx context.Context,
 				if d != nil && d.Telegram != nil {
 					d.Telegram.NotifyClarifyResolved(ctx, taskID, q.Text, level2)
 				}
-				log.Info().Str("task", taskID).Str("q", q.ID).Str("by", level2).Msg("phaseClarify: resolved at level2")
+				slog.Info("phaseClarify: resolved at level2", "task", taskID, "q", q.ID, "by", level2)
 				continue
 			}
 		}
@@ -397,7 +397,7 @@ func (a *BaseAgent) phaseClarify(ctx context.Context,
 		a.writeRunningState(task, "clarify complete, moving to plan")
 
 		d.Telegram.NotifyAnswerReceived(ctx, taskID, taskTitle)
-		log.Info().Str("task", taskID).Str("q", q.ID).Msg("phaseClarify: resolved by human")
+		slog.Info("phaseClarify: resolved by human", "task", taskID, "q", q.ID)
 	}
 
 	// All questions resolved — move to plan.
@@ -513,7 +513,7 @@ Be concise.`
 			d.Telegram.NotifyPlanApproved(ctx, a.cfg.ID, taskID, taskTitle, planResult.Plan)
 		}
 
-		log.Info().Str("agent", a.cfg.ID).Str("task", taskID).Msg("phase: plan — approved by Opus")
+		slog.Info("phase: plan — approved by Opus", "agent", a.cfg.ID, "task", taskID)
 		return true, nil
 	}
 
@@ -536,8 +536,7 @@ Be concise.`
 			d.Telegram.NotifyPlanRejectedFinal(ctx, taskID, taskTitle, guidance)
 		}
 
-		log.Error().Str("task", taskID).Int("redirects", newRedirectCount).
-			Msg("phase: plan — rejected 3 times by Opus, failing task")
+		slog.Error("phase: plan — rejected 3 times by Opus, failing task", "task", taskID, "redirects", newRedirectCount)
 		return false, fmt.Errorf("plan rejected %d times by Opus", newRedirectCount)
 	}
 
@@ -561,8 +560,7 @@ Be concise.`
 		d.Telegram.NotifyPlanRedirected(ctx, a.cfg.ID, taskID, taskTitle, guidance, newRedirectCount, maxRedirects)
 	}
 
-	log.Info().Str("agent", a.cfg.ID).Str("task", taskID).
-		Int("redirect", newRedirectCount).Msg("phase: plan — redirected by Opus")
+	slog.Info("phase: plan — redirected by Opus", "agent", a.cfg.ID, "task", taskID, "redirect", newRedirectCount)
 	return false, nil
 }
 
@@ -683,7 +681,7 @@ func (a *BaseAgent) writeBlockedState(task *adapter.Task, resolvedCount, totalCo
 	}
 	task.Unlock()
 	if err := d.StateStore.WriteAgentState(state); err != nil {
-		log.Warn().Err(err).Str("agent", a.cfg.ID).Msg("writeBlockedState failed")
+		slog.Warn("writeBlockedState failed", "err", err, "agent", a.cfg.ID)
 	}
 }
 
@@ -704,7 +702,7 @@ func (a *BaseAgent) writeRunningState(task *adapter.Task, progress string) {
 	}
 	task.Unlock()
 	if err := d.StateStore.WriteAgentState(s); err != nil {
-		log.Warn().Err(err).Str("agent", a.cfg.ID).Msg("writeRunningState failed")
+		slog.Warn("writeRunningState failed", "err", err, "agent", a.cfg.ID)
 	}
 }
 
@@ -731,7 +729,7 @@ func (a *BaseAgent) saveToResolvedStore(rs *state.ResolvedStore, question, answe
 		Severity:          "low",
 	}
 	if err := rs.Save(pattern, fmt.Sprintf("# Clarification Q&A\n\nQuestion: %s\n\nAnswer: %s", question, answer)); err != nil {
-		log.Warn().Err(err).Str("agent", a.cfg.ID).Msg("saveToResolvedStore failed")
+		slog.Warn("saveToResolvedStore failed", "err", err, "agent", a.cfg.ID)
 	}
 }
 

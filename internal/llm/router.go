@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // newTransport returns an isolated http.Transport that dials IPv4 only.
@@ -81,7 +81,7 @@ func (r *Router) Call(ctx context.Context, req Request) (*Response, error) {
 
 	// Circuit breaker: reject fast if the provider is known to be down.
 	if cbErr := r.breakers.get(provider).allow(); cbErr != nil {
-		log.Warn().Str("model", req.Model).Msg("llm circuit breaker rejecting request")
+		slog.Warn("llm circuit breaker rejecting request", "model", req.Model)
 		return nil, fmt.Errorf("llm %s: %w", provider, cbErr)
 	}
 
@@ -140,7 +140,7 @@ func costCalc(costModel string, resp *Response) float64 {
 	if resp.CostMode != "" {
 		cost, costErr := CalcCostAdvanced(costModel, resp.InputTokens, resp.OutputTokens, resp.CacheTokens, resp.CostMode)
 		if costErr != nil {
-			log.Warn().Str("model", costModel).Str("mode", string(resp.CostMode)).Msg("cost calculation failed — reporting $0")
+			slog.Warn("cost calculation failed — reporting $0", "model", costModel, "mode", string(resp.CostMode))
 			return 0
 		}
 		return cost
@@ -148,7 +148,7 @@ func costCalc(costModel string, resp *Response) float64 {
 
 	cost, costErr := CalcCost(costModel, resp.InputTokens, resp.OutputTokens)
 	if costErr != nil {
-		log.Warn().Str("model", costModel).Msg("cost calculation failed — reporting $0")
+		slog.Warn("cost calculation failed — reporting $0", "model", costModel)
 		return 0
 	}
 	return cost

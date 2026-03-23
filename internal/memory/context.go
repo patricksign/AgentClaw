@@ -3,13 +3,13 @@ package memory
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/state"
-	"github.com/rs/zerolog/log"
 )
 
 func New(dbPath, projectPath string) (*Store, error) {
@@ -99,14 +99,14 @@ func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) adapte
 		if doc, derr := s.agentDoc.Read(role); derr == nil {
 			ctx.AgentDoc = truncateToTokens(doc, 800)
 		} else {
-			log.Warn().Err(derr).Str("role", role).Msg("BuildContext: AgentDoc.Read failed")
+			slog.Warn("BuildContext: AgentDoc.Read failed", "err", derr, "role", role)
 		}
 	}
 
 	// ScopeManifest: what this agent owns / must not touch.
 	if s.scope != nil {
 		if m, serr := s.scope.Read(role); serr != nil {
-			log.Warn().Err(serr).Str("role", role).Msg("BuildContext: scope.Read failed")
+			slog.Warn("BuildContext: scope.Read failed", "err", serr, "role", role)
 		} else {
 			ctx.Scope = m
 		}
@@ -142,7 +142,7 @@ func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) adapte
 			defer wg.Done()
 			recent, err := s.RecentByRole(role, recentLimit)
 			if err != nil {
-				log.Warn().Err(err).Str("role", role).Msg("BuildContext: RecentByRole failed")
+				slog.Warn("BuildContext: RecentByRole failed", "err", err, "role", role)
 				return
 			}
 			var entries []string
@@ -191,7 +191,7 @@ func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) adapte
 					defer wg.Done()
 					all, aerr := s.scope.ReadAll()
 					if aerr != nil {
-						log.Warn().Err(aerr).Msg("BuildContext: ScopeStore.ReadAll failed")
+						slog.Warn("BuildContext: ScopeStore.ReadAll failed", "err", aerr)
 						return
 					}
 					mu.Lock()
@@ -207,7 +207,7 @@ func (s *Store) BuildContext(agentID, role, taskTitle, complexity string) adapte
 				defer wg.Done()
 				adrs, err := s.ListADRs()
 				if err != nil {
-					log.Warn().Err(err).Msg("BuildContext: ListADRs failed")
+					slog.Warn("BuildContext: ListADRs failed", "err", err)
 					return
 				}
 				mu.Lock()

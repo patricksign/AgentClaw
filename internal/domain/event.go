@@ -58,6 +58,9 @@ const (
 	EventPRCreated     EventType = "pr.created"
 	EventDeployStarted EventType = "deploy.started"
 	EventDeployDone    EventType = "deploy.done"
+
+	// Guard — hard security boundary violations
+	EventGuardViolation EventType = "guard.violation"
 )
 
 // Event represents something that happened in the system.

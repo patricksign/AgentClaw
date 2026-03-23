@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 	"github.com/patricksign/AgentClaw/internal/textutil"
 	"github.com/patricksign/AgentClaw/internal/usecase/phase"
 	"github.com/patricksign/AgentClaw/internal/usecase/reasoning"
-	"github.com/rs/zerolog/log"
 )
 
 const reviewSystem = `Review this implementation output for quality, correctness,
@@ -95,7 +95,7 @@ func (l *LoopOrchestrator) Run(
 				Payload:    map[string]string{"message": fmt.Sprintf("Loop approved on attempt %d", attempt)},
 				OccurredAt: time.Now(),
 			}); err != nil {
-				log.Warn().Err(err).Str("task", task.ID).Msg("loop: done notification failed")
+				slog.Warn("loop: done notification failed", "err", err, "task", task.ID)
 			}
 			return result, nil
 		}
@@ -125,7 +125,7 @@ func (l *LoopOrchestrator) Run(
 			Payload:    map[string]string{"message": fmt.Sprintf("Output needs improvement — attempt %d/%d", attempt, l.maxLoops)},
 			OccurredAt: time.Now(),
 		}); err != nil {
-			log.Warn().Err(err).Str("task", task.ID).Msg("loop: transition notification failed")
+			slog.Warn("loop: transition notification failed", "err", err, "task", task.ID)
 		}
 	}
 

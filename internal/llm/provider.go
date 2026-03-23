@@ -1,5 +1,7 @@
 package llm
 
+import config "github.com/patricksign/AgentClaw/internal/constant"
+
 // provider.go — Single source of truth for all LLM provider configuration.
 // Base URLs, model ID mappings, and API key names live here.
 // No other file should hardcode these values.
@@ -7,24 +9,24 @@ package llm
 // ─── Base URLs ───────────────────────────────────────────────────────────────
 
 const (
-	AnthropicBaseURL = "https://api.anthropic.com/v1/messages"
-	MinimaxBaseURL   = "https://api.minimax.io/v1/text/chatcompletion_v2"
-	GLMBaseURL       = "https://api.z.ai/api/coding/paas/v4"
-	KimiBaseURL      = "https://api.moonshot.ai/v1/chat/completions"
+	AnthropicBaseURL = config.AnthropicBaseURL
+	MinimaxBaseURL   = config.MinimaxBaseURL
+	GLMBaseURL       = config.GLMBaseURL
+	KimiBaseURL      = config.KimiBaseURL
 )
 
 // ─── API Key Environment Variable Names ──────────────────────────────────────
 
 const (
-	EnvAnthropicKey = "ANTHROPIC_API_KEY"
-	EnvMinimaxKey   = "MINIMAX_API_KEY"
-	EnvGLMKey       = "GLM_API_KEY"
-	EnvKimiKey      = "KIMI_API_KEY"
+	EnvAnthropicKey = config.EnvAnthropicKey
+	EnvMinimaxKey   = config.EnvMinimaxKey
+	EnvGLMKey       = config.EnvGLMKey
+	EnvKimiKey      = config.EnvKimiKey
 )
 
 // ─── Anthropic API version ────────────────────────────────────────────────────
 
-const AnthropicAPIVersion = "2023-06-01"
+const AnthropicAPIVersion = config.AnthropicAPIVersion
 
 // ─── Unified Provider Registry ───────────────────────────────────────────────
 // All providers (Anthropic + OpenAI-compatible) are registered in LLMProviders.

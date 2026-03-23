@@ -2,9 +2,9 @@ package reasoning
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
 )
 
 // Compile-time check: ReasoningRouter implements port.LLMRouter.
@@ -33,13 +33,7 @@ func (r *ReasoningRouter) Call(ctx context.Context, req port.LLMRequest) (*port.
 
 	// Log thinking usage when it was enabled and produced output.
 	if req.Thinking != nil && req.Thinking.Enabled && resp.ThinkingTokens > 0 {
-		log.Debug().
-			Str("model", req.Model).
-			Str("task", req.TaskID).
-			Int("budget", req.Thinking.BudgetTokens).
-			Int64("thinking_tokens", resp.ThinkingTokens).
-			Int64("output_tokens", resp.OutputTokens).
-			Msg("reasoning: extended thinking completed")
+		slog.Debug("reasoning: extended thinking completed", "model", req.Model, "task", req.TaskID, "budget", req.Thinking.BudgetTokens, "thinking_tokens", resp.ThinkingTokens, "output_tokens", resp.OutputTokens)
 	}
 
 	return resp, nil

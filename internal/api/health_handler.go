@@ -1,14 +1,15 @@
 package api
 
 import (
-	"net/http"
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 )
 
-func (s *Server) HandlerHealth(mux *http.ServeMux) {
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
+func (s *Server) HandlerHealth(c fiber.Router) {
+	GET(c, "/healthz", s.handleHealthz)
 }
 
-// GET /healthz — lightweight health check for Docker/k8s probes.
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+// GET /healthz
+func (s *Server) handleHealthz(c *fiber.Ctx) error {
+	return common.ResponseApiOK(c, map[string]string{"status": "ok"}, nil)
 }

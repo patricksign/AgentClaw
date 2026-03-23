@@ -8,7 +8,7 @@ import (
 	"github.com/patricksign/AgentClaw/internal/adapter"
 	"github.com/patricksign/AgentClaw/internal/domain"
 	"github.com/patricksign/AgentClaw/internal/port"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // legacyMapping maps adapter.EventType → domain.EventType.
@@ -84,11 +84,7 @@ func (b *LegacyBridge) start() {
 			}
 
 			b.domain.Publish(evt)
-			log.Debug().
-				Str("legacy_type", string(legacyEvt.Type)).
-				Str("domain_type", string(domainType)).
-				Str("task_id", legacyEvt.TaskID).
-				Msg("bridge: converted legacy → domain event")
+			slog.Debug("bridge: converted legacy → domain event", "legacy_type", string(legacyEvt.Type), "domain_type", string(domainType), "task_id", legacyEvt.TaskID)
 		}
 	}()
 }

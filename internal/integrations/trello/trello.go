@@ -11,7 +11,7 @@ import (
 	"io"
 	"net/url"
 
-	"github.com/rs/zerolog/log"
+	"log/slog"
 )
 
 // IsConfigured reports whether both TRELLO_KEY and TRELLO_TOKEN are embedded in
@@ -93,7 +93,7 @@ func (c *Client) PopulateChecklist(ctx context.Context, checklistID string, item
 	for _, title := range items {
 		item, err := c.AddCheckItem(ctx, checklistID, title)
 		if err != nil {
-			log.Warn().Err(err).Str("title", title).Msg("trello: PopulateChecklist: failed to add check item")
+			slog.Warn("trello: PopulateChecklist: failed to add check item", "err", err, "title", title)
 			continue
 		}
 		result[title] = item.ID

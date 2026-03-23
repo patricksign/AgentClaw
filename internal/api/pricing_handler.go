@@ -1,16 +1,16 @@
 package api
 
 import (
-	"net/http"
-
+	"github.com/gofiber/fiber/v2"
+	"github.com/patricksign/AgentClaw/common"
 	"github.com/patricksign/AgentClaw/internal/llm"
 )
 
-func (s *Server) HandlerPricing(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/pricing", cors(s.handlePricing))
+func (s *Server) HandlerPricing(c fiber.Router) {
+	GET(c, "/pricing", s.handlePricing)
 }
 
-// GET /api/pricing — returns the loaded pricing table for frontend sync.
-func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, llm.GetPricingTable())
+// GET /api/pricing
+func (s *Server) handlePricing(c *fiber.Ctx) error {
+	return common.ResponseApiOK(c, llm.GetPricingTable(), nil)
 }
