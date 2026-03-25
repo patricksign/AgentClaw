@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # layer 1: Short-term Memory (Redis)
+  redis:
+    image: redis:8.2.5-alpine
+    container_name: agentclaw-redis
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 512M # 512MB for short-term memory
+    command: redis-server --save 60 1 --loglevel warning
+
+  # layer 2: System State (PostgreSQL)
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentclaw-postgres
+    environment:
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-password}
+      POSTGRES_DB: agentclaw_system
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/memory/migrations:/docker-entrypoint-initdb.d # auto execute migrate
+    deploy:
+      resources:
+        limits:
+          memory: 8G # 8GB for fast index log cost and events
+
+  # layer 3: Semantic Memory (Qdrant)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: agentclaw-qdrant
+    ports:
+      - "6333:6333" # REST API (same port.SemanticMemory)
+    volumes:
+      - qdrantdata:/qdrant/storage
+    deploy:
+      resources:
+        limits:
+          memory: 4G # 8GB for fast index log cost and events
+    environment:
+      QDRANT__SERVICE__ENABLE_STATIC_CONTENT: 0
+
+  # layer 4: Knowledge Graph (Neo4j)
+  neo4j:
+    image: neo4j:5.15-enterprise # using Enterprise version for optimize multi-threading
+    container_name: agentclaw-neo4j
+    ports:
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      NEO4J_dbms_memory_heap_initial_size: 4G
+      NEO4J_dbms_memory_heap_max_size: 8G
+      NEO4J_dbms_memory_pagecache_size: 4G
+    volumes:
+      - neo4jdata:/data
+    deploy:
+      resources:
+        limits:
+          memory: 8G # provide 56GB for deep Graph
+
+volumes:
+  pgdata:
+  qdrantdata:
+  neo4jdata:
